@@ -1,0 +1,6 @@
+This package builds on django-notifications (Justin Quick et al.) and
+django-notifications-community (the community fork). See those projects'
+AUTHORS files for the full upstream contributor list.
+
+--- django-notifications-community-sites ---
+je-bugshell (https://github.com/je-bugshell)

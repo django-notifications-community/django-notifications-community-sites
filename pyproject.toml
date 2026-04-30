@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-notifications-community-sites"
+dynamic = ["version"]
+description = "Multi-site companion for django-notifications-community."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.txt"]
+keywords = ["django", "notifications", "sites", "multi-site", "tenant"]
+authors = [
+    { name = "django-notifications-community contributors" },
+]
+maintainers = [
+    { name = "django-notifications-community contributors" },
+]
+dependencies = [
+    "django>=5.2,<6.3",
+    "django-notifications-community>=1.12",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/django-notifications-community/django-notifications-community-sites"
+Source = "https://github.com/django-notifications-community/django-notifications-community-sites"
+Issues = "https://github.com/django-notifications-community/django-notifications-community-sites/issues"
+Changelog = "https://github.com/django-notifications-community/django-notifications-community-sites/blob/master/CHANGELOG.md"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0+unknown"
+
+[tool.setuptools.packages.find]
+include = ["notifications_sites*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "DJ",
+    "F",
+    "E",
+    "W",
+    "I",
+    "UP",
+    "D300",
+    "SIM",
+    "RUF",
+    "PERF",
+]
+ignore = [
+    "SIM108",
+    "PERF203",
+    "RUF001",
+    "RUF012",
+]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint.isort]
+known-first-party = ["notifications_sites"]
