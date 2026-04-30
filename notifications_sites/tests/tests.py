@@ -52,6 +52,15 @@ class NotifyHandlerSiteStampingTest(TestCase):
         with self.assertRaises(TypeError):
             notify.send(self.from_user, recipient=self.to_user, verb='pinged', site_id=self.site_b.pk)
 
+    def test_site_kwarg_int_pk_is_rejected(self):
+        """site=<int> is also a typo. Reject upfront with a clearer message than Django's FK error."""
+        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
+            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site=self.site_b.pk)
+
+    def test_site_kwarg_str_is_rejected(self):
+        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
+            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site='b.example.com')
+
 
 class ViewFilteringTest(TestCase):
     """Base views filter by the current site via the registered hook."""

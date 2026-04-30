@@ -31,6 +31,12 @@ def site_aware_notify_handler(verb, **kwargs):
     optional_objs = [(kwargs.pop(opt, None), opt) for opt in ('target', 'action_object')]
 
     site = kwargs.pop('site', None)
+    if site is not None and not isinstance(site, Site):
+        raise TypeError(
+            f"notify.send() got 'site' of type {type(site).__name__}; "
+            'expected a Site instance. Use Site.objects.get(pk=...) to fetch '
+            "the row, or omit 'site' to use Site.objects.get_current()."
+        )
     if site is None:
         site = Site.objects.get_current()
 
