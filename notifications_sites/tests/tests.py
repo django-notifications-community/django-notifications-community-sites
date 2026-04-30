@@ -61,6 +61,14 @@ class NotifyHandlerSiteStampingTest(TestCase):
         with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
             notify.send(self.from_user, recipient=self.to_user, verb='pinged', site='b.example.com')
 
+    def test_explicit_none_timestamp_is_coerced_to_now(self):
+        """Aligns with base: timestamp=None coerces to timezone.now() instead of IntegrityError."""
+        before = timezone.now()
+        notify.send(self.from_user, recipient=self.to_user, verb='ts_none', timestamp=None)
+        n = Notification.objects.get(verb='ts_none')
+        self.assertIsNotNone(n.timestamp)
+        self.assertGreaterEqual(n.timestamp, before)
+
 
 class ViewFilteringTest(TestCase):
     """Base views filter by the current site via the registered hook."""

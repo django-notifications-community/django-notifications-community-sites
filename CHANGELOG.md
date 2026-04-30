@@ -32,6 +32,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `site=<int_pk>` or `site=<str>` now raises `TypeError` with a hint
   pointing at `Site.objects.get(pk=...)`, mirroring the existing
   `site_id=` guard.
+- `notify.send(..., timestamp=None)` is now coerced to `timezone.now()`
+  instead of raising `IntegrityError` on the `NOT NULL` column. Aligns
+  the companion handler with base `notify_handler` (the base shipped
+  the same fix in [PR #57](https://github.com/django-notifications-community/django-notifications-community/pull/57)).
 - Wheel size: exclude `notifications_sites.tests` from the built
   wheel via `include-package-data = false` plus an `exclude` pattern.
   ~30 KB of test code no longer ships to installs.

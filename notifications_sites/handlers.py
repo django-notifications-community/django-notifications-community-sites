@@ -1,9 +1,16 @@
 """Site-aware replacement for ``notifications.base.models.notify_handler``.
 
 Stamps ``Site.objects.get_current()`` (or the explicit ``site=`` kwarg)
-on each notification. Mostly tracks the base handler, with a couple of
-small departures: a ``TypeError`` for the ``site_id=`` typo and the
-actor/target ContentType lookups hoisted out of the per-recipient loop.
+on each notification. Mirrors the base handler closely; the only
+differences are the site-specific guards and the ``site`` FK assignment:
+
+- ``site_id=`` raises ``TypeError`` (would otherwise silently land in
+  ``Notification.data``, masking a typo for ``site=``).
+- ``site=`` must be a ``Site`` instance; ``site=<int>`` or ``site=<str>``
+  raises ``TypeError`` instead of bubbling Django's generic FK error.
+- Each notification gets ``site = Site.objects.get_current()`` (or the
+  explicit ``site=`` kwarg).
+
 The companion's ``apps.ready()`` disconnects the base handler and
 connects this one in its place.
 """
@@ -42,7 +49,12 @@ def site_aware_notify_handler(verb, **kwargs):
 
     public = bool(kwargs.pop('public', True))
     description = kwargs.pop('description', None)
-    timestamp = kwargs.pop('timestamp', timezone.now())
+    # ``kwargs.pop('timestamp', timezone.now())`` returns ``None`` when the
+    # caller passed ``None`` explicitly; the default only applies when the key
+    # is absent. Coerce to now() so a NOT NULL column doesn't trip.
+    timestamp = kwargs.pop('timestamp', None)
+    if timestamp is None:
+        timestamp = timezone.now()
     Notification = load_notification_model()
     level = kwargs.pop('level', Notification.LEVELS.info)
     actor_for_concrete_model = kwargs.pop('actor_for_concrete_model', True)
