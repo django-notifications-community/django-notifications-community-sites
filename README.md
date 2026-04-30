@@ -89,18 +89,24 @@ tenant N. Pass `site=` explicitly from background jobs:
 notify.send(actor, recipient=user, verb='ping', site=tenant_site)
 ```
 
-### `SITE_ID` precedence over the request host
+### Request host wins over `SITE_ID`
 
-Django's `Site.objects.get_current(request)` returns the row whose primary key
-matches `SITE_ID` if that setting is set, ignoring the request host. So
-domain-based multi-tenancy (running multiple sites off `Host`-driven routing)
-needs `SITE_ID = None` so `get_current()` falls back to resolving by host. This
-is a Django behavior, not specific to this companion, but it is the most
-common surprise once you install the package.
+When a request is in scope, the companion resolves the current site by `Host`
+header first, falling back to `SITE_ID` only if no `Site` row matches. This
+inverts Django's own `Site.objects.get_current(request)`, which checks
+`SITE_ID` before host. The companion's choice fits multi-tenant Django apps:
+each request gets the site it came from; background jobs and other request-less
+callers fall back to `SITE_ID`.
 
-If you change `SITE_ID` mid-process (in tests, for example), call
-`Site.objects.clear_cache()` afterwards or `get_current()` will keep returning
-the previously-resolved row.
+Practical implications:
+
+- Every tenant domain needs a `Site` row.
+- Hosts that don't match any row (e.g. `testserver`, `localhost` in dev) fall
+  back to the `SITE_ID`-resolved row, so tests and local development keep
+  working without per-host setup.
+- If you change `SITE_ID` mid-process, call `Site.objects.clear_cache()`
+  afterwards or the cached lookup will keep returning the previously-resolved
+  row.
 
 ## Bringing existing data over
 
