@@ -430,6 +430,46 @@ class CopyLegacyNotificationsCommandTest(TestCase):
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications', default_site=9999)
 
+    def test_errors_when_source_missing_required_columns(self):
+        """Source schema older than expected: report the missing columns instead of a SQL error."""
+        cols_sql = """
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level VARCHAR(20) NOT NULL DEFAULT 'info',
+            recipient_id INTEGER NOT NULL,
+            unread BOOLEAN NOT NULL DEFAULT 1,
+            actor_content_type_id INTEGER NOT NULL,
+            actor_object_id VARCHAR(255) NOT NULL,
+            verb VARCHAR(255) NOT NULL,
+            description TEXT,
+            target_content_type_id INTEGER,
+            target_object_id VARCHAR(255),
+            action_object_content_type_id INTEGER,
+            action_object_object_id VARCHAR(255),
+            timestamp DATETIME NOT NULL,
+            public BOOLEAN NOT NULL DEFAULT 1,
+            deleted BOOLEAN NOT NULL DEFAULT 0,
+            emailed BOOLEAN NOT NULL DEFAULT 0
+            -- intentionally missing 'data'
+        """
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+            cursor.execute(f'CREATE TABLE notifications_notification ({cols_sql})')
+        self.addCleanup(self._drop_legacy_table)
+
+        ct = ContentType.objects.get_for_model(self.from_user)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, 'too_old', 1, 0, 0, %s)",
+                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
+            )
+
+        with self.assertRaises(CommandError) as cm:
+            call_command('copy_legacy_notifications', default_site=self.site_a.pk)
+        self.assertIn('data', str(cm.exception))
+
 
 class DataKwargTest(TestCase):
     """notify.send(..., data={...}) survives the handler's data merging."""

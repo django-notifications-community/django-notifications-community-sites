@@ -93,6 +93,14 @@ class Command(BaseCommand):
             )
 
         source_columns = {col.name for col in introspection.get_table_description(cursor, SOURCE_TABLE)}
+        missing = sorted(set(BASE_COLS) - source_columns)
+        if missing:
+            raise CommandError(
+                f'{SOURCE_TABLE} is missing expected columns: {", ".join(missing)}. '
+                'The source schema is older or different from what the standard '
+                'django-notifications-community migration produces. Either back-fill '
+                'the columns first or copy data with a custom SQL script.'
+            )
         has_site_column = 'site_id' in source_columns
 
         cursor.execute(f'SELECT COUNT(*) FROM {SOURCE_TABLE}')
