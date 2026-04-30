@@ -12,7 +12,14 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': 'test.sqlite3',
-    }
+    },
+    # Second alias used by CopyLegacyNotificationsDatabaseFlagTest. Other
+    # tests do not list 'aux' in their TestCase.databases set, so the
+    # connection is only opened/migrated for that one case.
+    'aux': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': 'test_aux.sqlite3',
+    },
 }
 
 MIDDLEWARE = (

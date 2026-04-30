@@ -469,6 +469,89 @@ class DataKwargTest(TestCase):
         self.assertEqual(payload, {'foo': 'bar'})
 
 
+class CopyLegacyNotificationsDatabaseFlagTest(TestCase):
+    """The command honors --database for projects routing notifications elsewhere."""
+
+    databases = {'default', 'aux'}
+
+    BASE_COLS_SQL = CopyLegacyNotificationsCommandTest.BASE_COLS_SQL
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='dbflag_from', password='pwd')
+        self.to_user = User.objects.create_user(username='dbflag_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.from_user_aux = User.objects.using('aux').create(
+            username='dbflag_from', password='pwd'
+        )
+        self.to_user_aux = User.objects.using('aux').create(
+            username='dbflag_to', password='pwd'
+        )
+
+    def _create_legacy_table_on(self, alias):
+        from django.db import connections
+
+        with connections[alias].cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+            cursor.execute(f'CREATE TABLE notifications_notification ({self.BASE_COLS_SQL})')
+        self.addCleanup(self._drop_legacy_table_on, alias)
+
+    def _drop_legacy_table_on(self, alias):
+        from django.db import connections
+
+        with connections[alias].cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+
+    def _insert_legacy_row_on(self, alias, verb):
+        from django.db import connections
+
+        ct = ContentType.objects.db_manager(alias).get_for_model(User)
+        with connections[alias].cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, %s, 1, 0, 0, %s)",
+                [self.to_user_aux.pk, ct.pk, str(self.from_user_aux.pk), verb, timezone.now()],
+            )
+
+    def test_database_flag_routes_to_aux(self):
+        self._create_legacy_table_on('aux')
+        self._insert_legacy_row_on('aux', 'aux_only')
+        out = StringIO()
+        call_command(
+            'copy_legacy_notifications',
+            default_site=self.site_a.pk,
+            database='aux',
+            stdout=out,
+        )
+        N = load_notification_model()
+        self.assertEqual(N.objects.using('aux').count(), 1)
+        self.assertEqual(N.objects.using('aux').first().verb, 'aux_only')
+        # default DB untouched
+        self.assertEqual(N.objects.count(), 0)
+
+    def test_default_alias_unchanged_when_flag_omitted(self):
+        self._create_legacy_table_on('default')
+        from django.db import connections
+
+        ct = ContentType.objects.get_for_model(User)
+        with connections['default'].cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, 'default_only', 1, 0, 0, %s)",
+                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
+            )
+        out = StringIO()
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
+        N = load_notification_model()
+        self.assertEqual(N.objects.count(), 1)
+        # aux DB not touched
+        self.assertEqual(N.objects.using('aux').count(), 0)
+
+
 class RecipientVariantTest(TestCase):
     """notify.send fan-out paths each stamp every produced row with a site."""
 

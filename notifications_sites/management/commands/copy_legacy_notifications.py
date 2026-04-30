@@ -8,7 +8,7 @@ is the opt-in upgrade path.
 
 from django.contrib.sites.models import Site
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, transaction
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from notifications.swappable import load_notification_model
 
 SOURCE_TABLE = 'notifications_notification'
@@ -60,12 +60,23 @@ class Command(BaseCommand):
             action='store_true',
             help='Copy even if the target table already has rows. Off by default to avoid creating duplicates.',
         )
+        parser.add_argument(
+            '--database',
+            default=DEFAULT_DB_ALIAS,
+            help=(
+                'Database alias to copy from and to. Defaults to "default". '
+                'Use this when DATABASE_ROUTERS routes notifications to a '
+                'non-default alias.'
+            ),
+        )
 
     def handle(self, *args, **options):
         default_site = options['default_site']
         dry_run = options['dry_run']
         force = options['force']
+        database = options['database']
 
+        connection = connections[database]
         target_table = load_notification_model()._meta.db_table
 
         introspection = connection.introspection
@@ -115,7 +126,7 @@ class Command(BaseCommand):
         if null_site_count > 0 and default_site is None and not dry_run:
             raise CommandError(f'{null_site_count} row(s) need a default Site. Pass --default-site=<pk>.')
 
-        if default_site is not None and not Site.objects.filter(pk=default_site).exists():
+        if default_site is not None and not Site.objects.using(database).filter(pk=default_site).exists():
             raise CommandError(f'Site with pk={default_site} does not exist.')
 
         if dry_run:
@@ -129,7 +140,7 @@ class Command(BaseCommand):
             select_cols += ', %s'
         sql = f'INSERT INTO {target_table} ({", ".join(BASE_COLS)}, site_id) SELECT {select_cols} FROM {SOURCE_TABLE}'
 
-        with transaction.atomic():
+        with transaction.atomic(using=database):
             cursor.execute(sql, [default_site])
             copied = cursor.rowcount
 
