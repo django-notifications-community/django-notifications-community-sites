@@ -2,6 +2,7 @@
 
 from django.apps import AppConfig
 from django.core.checks import register
+from django.core.exceptions import ImproperlyConfigured
 from django.utils.translation import gettext_lazy as _
 
 
@@ -35,7 +36,14 @@ class Config(AppConfig):
         # Replace the base's notify_handler with the site-aware variant.
         # Requires this app to come AFTER 'notifications' in INSTALLED_APPS
         # so the base's connect() has already run; check_app_ordering enforces it.
-        notify.disconnect(dispatch_uid='notifications.models.notification')
+        disconnected = notify.disconnect(dispatch_uid='notifications.models.notification')
+        if not disconnected:
+            raise ImproperlyConfigured(
+                'notifications_sites failed to disconnect the base notify_handler. '
+                "Ensure 'notifications_sites' comes after 'notifications' in "
+                "INSTALLED_APPS. If the base package's dispatch_uid has changed, "
+                'this companion needs an update.'
+            )
         notify.connect(site_aware_notify_handler, dispatch_uid='notifications_sites.notification')
 
         register_queryset_filter(filter_by_current_site)
