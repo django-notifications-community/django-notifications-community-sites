@@ -66,8 +66,6 @@ extension hooks:
   builds a Notification queryset.
 - A cache-key modifier that namespaces the unread-count cache key by site, so
   concurrent sites don't poison each other.
-- A cache-invalidation registration that drops all per-site cache variants on
-  mutation.
 
 The base's `notify_handler` is replaced with a site-aware variant that stamps
 `Site.objects.get_current()` on each notification (or whatever you pass via
@@ -75,6 +73,17 @@ The base's `notify_handler` is replaced with a site-aware variant that stamps
 
 The base's views, helpers, and template tags are reused unchanged through the
 hooks. No URL or template changes required.
+
+### Background jobs and other request-less callers
+
+When `notify.send()` fires from a code path without a request,
+`Site.objects.get_current()` falls back to the row whose primary key matches
+`SITE_ID`. In a multi-tenant deployment that is rarely the right answer for
+tenant N. Pass `site=` explicitly from background jobs:
+
+```python
+notify.send(actor, recipient=user, verb='ping', site=tenant_site)
+```
 
 ## Bringing existing data over
 
