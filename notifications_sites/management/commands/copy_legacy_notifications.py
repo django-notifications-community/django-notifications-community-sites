@@ -9,9 +9,9 @@ is the opt-in upgrade path.
 from django.contrib.sites.models import Site
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
+from notifications.swappable import load_notification_model
 
 SOURCE_TABLE = 'notifications_notification'
-TARGET_TABLE = 'notifications_sites_notification'
 
 BASE_COLS = (
     'level',
@@ -35,9 +35,9 @@ BASE_COLS = (
 
 class Command(BaseCommand):
     help = (
-        'Copy rows from notifications_notification into '
-        'notifications_sites_notification, assigning a Site to any row '
-        'whose site_id is NULL or absent.'
+        'Copy rows from notifications_notification into the swapped '
+        'Notification table, assigning a Site to any row whose '
+        'site_id is NULL or absent.'
     )
 
     def add_arguments(self, parser):
@@ -58,13 +58,15 @@ class Command(BaseCommand):
         parser.add_argument(
             '--force',
             action='store_true',
-            help=(f'Copy even if {TARGET_TABLE} already has rows. Off by default to avoid creating duplicates.'),
+            help='Copy even if the target table already has rows. Off by default to avoid creating duplicates.',
         )
 
     def handle(self, *args, **options):
         default_site = options['default_site']
         dry_run = options['dry_run']
         force = options['force']
+
+        target_table = load_notification_model()._meta.db_table
 
         introspection = connection.introspection
         cursor = connection.cursor()
@@ -73,12 +75,18 @@ class Command(BaseCommand):
             self.stdout.write(f'No {SOURCE_TABLE} table found — nothing to copy.')
             return
 
+        if target_table == SOURCE_TABLE:
+            raise CommandError(
+                f'Target table resolves to {target_table}, the same as the source. '
+                'Confirm NOTIFICATIONS_NOTIFICATION_MODEL points at the companion model.'
+            )
+
         source_columns = {col.name for col in introspection.get_table_description(cursor, SOURCE_TABLE)}
         has_site_column = 'site_id' in source_columns
 
         cursor.execute(f'SELECT COUNT(*) FROM {SOURCE_TABLE}')
         source_count = cursor.fetchone()[0]
-        cursor.execute(f'SELECT COUNT(*) FROM {TARGET_TABLE}')
+        cursor.execute(f'SELECT COUNT(*) FROM {target_table}')
         target_count = cursor.fetchone()[0]
 
         if has_site_column:
@@ -92,7 +100,7 @@ class Command(BaseCommand):
             self.stdout.write(f'  with NULL site_id: {null_site_count}')
         else:
             self.stdout.write('  (no site_id column; every row needs a default)')
-        self.stdout.write(f'Target ({TARGET_TABLE}): {target_count} row(s)')
+        self.stdout.write(f'Target ({target_table}): {target_count} row(s)')
 
         if source_count == 0:
             self.stdout.write('Nothing to copy.')
@@ -100,7 +108,7 @@ class Command(BaseCommand):
 
         if target_count > 0 and not force:
             raise CommandError(
-                f'{TARGET_TABLE} already contains {target_count} row(s). '
+                f'{target_table} already contains {target_count} row(s). '
                 'Re-run with --force to copy anyway (this can create duplicates).'
             )
 
@@ -119,7 +127,7 @@ class Command(BaseCommand):
             select_cols += ', COALESCE(site_id, %s)'
         else:
             select_cols += ', %s'
-        sql = f'INSERT INTO {TARGET_TABLE} ({", ".join(BASE_COLS)}, site_id) SELECT {select_cols} FROM {SOURCE_TABLE}'
+        sql = f'INSERT INTO {target_table} ({", ".join(BASE_COLS)}, site_id) SELECT {select_cols} FROM {SOURCE_TABLE}'
 
         with transaction.atomic():
             cursor.execute(sql, [default_site])
