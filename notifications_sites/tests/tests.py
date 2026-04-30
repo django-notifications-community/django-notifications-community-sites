@@ -52,6 +52,15 @@ class NotifyHandlerSiteStampingTest(TestCase):
         with self.assertRaises(TypeError):
             notify.send(self.from_user, recipient=self.to_user, verb='pinged', site_id=self.site_b.pk)
 
+    def test_site_kwarg_int_pk_is_rejected(self):
+        """site=<int> is also a typo. Reject upfront with a clearer message than Django's FK error."""
+        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
+            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site=self.site_b.pk)
+
+    def test_site_kwarg_str_is_rejected(self):
+        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
+            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site='b.example.com')
+
 
 class ViewFilteringTest(TestCase):
     """Base views filter by the current site via the registered hook."""
@@ -122,6 +131,61 @@ class ViewFilteringTest(TestCase):
         data = response.json()
         self.assertEqual(data['unread_count'], 2)
         self.assertEqual({n['verb'] for n in data['unread_list']}, {'a1', 'a2'})
+
+    @override_settings(ALLOWED_HOSTS=['*'])
+    def test_request_host_picks_site_over_site_id(self):
+        """SITE_ID=1 (site_a), but the request comes from site_b's domain → site_b wins."""
+        response = self.client.get(reverse('notifications:all'), HTTP_HOST='b.example.com')
+        verbs = {n.verb for n in response.context['notifications']}
+        self.assertEqual(verbs, {'b1'})
+
+    def test_unmatched_host_falls_back_to_site_id(self):
+        """No Site row for 'testserver' → fall through to SITE_ID=1 → site_a."""
+        response = self.client.get(reverse('notifications:all'))
+        verbs = {n.verb for n in response.context['notifications']}
+        self.assertEqual(verbs, {'a1', 'a2'})
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class ResolveSiteTest(TestCase):
+    """The hooks resolver prefers request host with SITE_ID as the request-less fallback."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+
+    def test_no_request_uses_site_id(self):
+        from notifications_sites.hooks import _resolve_site
+
+        self.assertEqual(_resolve_site().pk, self.site_a.pk)
+
+    def test_request_host_takes_precedence_over_site_id(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='b.example.com')
+        self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
+
+    def test_request_host_with_port_strips_and_matches(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='b.example.com:8000')
+        self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
+
+    def test_unmatched_host_falls_back_to_site_id(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='nope.example.com')
+        self.assertEqual(_resolve_site(req).pk, self.site_a.pk)
 
 
 class CacheKeyNamespacingTest(TestCase):
@@ -420,6 +484,167 @@ class CopyLegacyNotificationsCommandTest(TestCase):
         self._insert_legacy_row('orphan', with_site_column=False)
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications', default_site=9999)
+
+    def test_errors_when_source_missing_required_columns(self):
+        """Source schema older than expected: report the missing columns instead of a SQL error."""
+        cols_sql = """
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level VARCHAR(20) NOT NULL DEFAULT 'info',
+            recipient_id INTEGER NOT NULL,
+            unread BOOLEAN NOT NULL DEFAULT 1,
+            actor_content_type_id INTEGER NOT NULL,
+            actor_object_id VARCHAR(255) NOT NULL,
+            verb VARCHAR(255) NOT NULL,
+            description TEXT,
+            target_content_type_id INTEGER,
+            target_object_id VARCHAR(255),
+            action_object_content_type_id INTEGER,
+            action_object_object_id VARCHAR(255),
+            timestamp DATETIME NOT NULL,
+            public BOOLEAN NOT NULL DEFAULT 1,
+            deleted BOOLEAN NOT NULL DEFAULT 0,
+            emailed BOOLEAN NOT NULL DEFAULT 0
+            -- intentionally missing 'data'
+        """
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+            cursor.execute(f'CREATE TABLE notifications_notification ({cols_sql})')
+        self.addCleanup(self._drop_legacy_table)
+
+        ct = ContentType.objects.get_for_model(self.from_user)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, 'too_old', 1, 0, 0, %s)",
+                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
+            )
+
+        with self.assertRaises(CommandError) as cm:
+            call_command('copy_legacy_notifications', default_site=self.site_a.pk)
+        self.assertIn('data', str(cm.exception))
+
+
+class DataKwargTest(TestCase):
+    """notify.send(..., data={...}) survives the handler's data merging."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='dk_from', password='pwd')
+        self.to_user = User.objects.create_user(username='dk_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_explicit_data_kwarg_is_preserved(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='dk1', data={'foo': 'bar'})
+        n = Notification.objects.get(verb='dk1')
+        self.assertEqual(n.data, {'foo': 'bar'})
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_explicit_data_merges_with_extras(self):
+        notify.send(
+            self.from_user, recipient=self.to_user, verb='dk2', data={'foo': 'bar'}, extra='zzz'
+        )
+        n = Notification.objects.get(verb='dk2')
+        self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_no_data_no_extras_leaves_data_null(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='dk3')
+        n = Notification.objects.get(verb='dk3')
+        self.assertIsNone(n.data)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_caller_dict_not_mutated(self):
+        payload = {'foo': 'bar'}
+        notify.send(
+            self.from_user, recipient=self.to_user, verb='dk4', data=payload, extra='zzz'
+        )
+        self.assertEqual(payload, {'foo': 'bar'})
+
+
+class CopyLegacyNotificationsDatabaseFlagTest(TestCase):
+    """The command honors --database for projects routing notifications elsewhere."""
+
+    databases = {'default', 'aux'}
+
+    BASE_COLS_SQL = CopyLegacyNotificationsCommandTest.BASE_COLS_SQL
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='dbflag_from', password='pwd')
+        self.to_user = User.objects.create_user(username='dbflag_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.from_user_aux = User.objects.using('aux').create(
+            username='dbflag_from', password='pwd'
+        )
+        self.to_user_aux = User.objects.using('aux').create(
+            username='dbflag_to', password='pwd'
+        )
+
+    def _create_legacy_table_on(self, alias):
+        from django.db import connections
+
+        with connections[alias].cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+            cursor.execute(f'CREATE TABLE notifications_notification ({self.BASE_COLS_SQL})')
+        self.addCleanup(self._drop_legacy_table_on, alias)
+
+    def _drop_legacy_table_on(self, alias):
+        from django.db import connections
+
+        with connections[alias].cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+
+    def _insert_legacy_row_on(self, alias, verb):
+        from django.db import connections
+
+        ct = ContentType.objects.db_manager(alias).get_for_model(User)
+        with connections[alias].cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, %s, 1, 0, 0, %s)",
+                [self.to_user_aux.pk, ct.pk, str(self.from_user_aux.pk), verb, timezone.now()],
+            )
+
+    def test_database_flag_routes_to_aux(self):
+        self._create_legacy_table_on('aux')
+        self._insert_legacy_row_on('aux', 'aux_only')
+        out = StringIO()
+        call_command(
+            'copy_legacy_notifications',
+            default_site=self.site_a.pk,
+            database='aux',
+            stdout=out,
+        )
+        N = load_notification_model()
+        self.assertEqual(N.objects.using('aux').count(), 1)
+        self.assertEqual(N.objects.using('aux').first().verb, 'aux_only')
+        # default DB untouched
+        self.assertEqual(N.objects.count(), 0)
+
+    def test_default_alias_unchanged_when_flag_omitted(self):
+        self._create_legacy_table_on('default')
+        from django.db import connections
+
+        ct = ContentType.objects.get_for_model(User)
+        with connections['default'].cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO notifications_notification '
+                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
+                'verb, public, deleted, emailed, timestamp) VALUES '
+                "('info', %s, 1, %s, %s, 'default_only', 1, 0, 0, %s)",
+                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
+            )
+        out = StringIO()
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
+        N = load_notification_model()
+        self.assertEqual(N.objects.count(), 1)
+        # aux DB not touched
+        self.assertEqual(N.objects.using('aux').count(), 0)
 
 
 class RecipientVariantTest(TestCase):
