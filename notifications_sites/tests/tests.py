@@ -422,6 +422,44 @@ class CopyLegacyNotificationsCommandTest(TestCase):
             call_command('copy_legacy_notifications', default_site=9999)
 
 
+class DataKwargTest(TestCase):
+    """notify.send(..., data={...}) survives the handler's data merging."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='dk_from', password='pwd')
+        self.to_user = User.objects.create_user(username='dk_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_explicit_data_kwarg_is_preserved(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='dk1', data={'foo': 'bar'})
+        n = Notification.objects.get(verb='dk1')
+        self.assertEqual(n.data, {'foo': 'bar'})
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_explicit_data_merges_with_extras(self):
+        notify.send(
+            self.from_user, recipient=self.to_user, verb='dk2', data={'foo': 'bar'}, extra='zzz'
+        )
+        n = Notification.objects.get(verb='dk2')
+        self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_no_data_no_extras_leaves_data_null(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='dk3')
+        n = Notification.objects.get(verb='dk3')
+        self.assertIsNone(n.data)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
+    def test_caller_dict_not_mutated(self):
+        payload = {'foo': 'bar'}
+        notify.send(
+            self.from_user, recipient=self.to_user, verb='dk4', data=payload, extra='zzz'
+        )
+        self.assertEqual(payload, {'foo': 'bar'})
+
+
 class RecipientVariantTest(TestCase):
     """notify.send fan-out paths each stamp every produced row with a site."""
 

@@ -76,7 +76,12 @@ def site_aware_notify_handler(verb, **kwargs):
                 setattr(newnotify, f'{opt}_content_type', optional_content_types[opt])
 
         if kwargs and get_config()['USE_JSONFIELD']:
-            data_kwargs = {}
+            # Seed data_kwargs with the caller's explicit data= dict so it
+            # survives the loop. Without this seed, the trailing
+            # ``newnotify.data = data_kwargs`` clobbers the caller's payload
+            # that the loop set via setattr (the base handler has the same
+            # bug).
+            data_kwargs = dict(kwargs.pop('data', None) or {})
             for key in list(kwargs.keys()):
                 if key.endswith('_for_concrete_model'):
                     continue
@@ -84,7 +89,8 @@ def site_aware_notify_handler(verb, **kwargs):
                     setattr(newnotify, key, kwargs[key])
                 else:
                     data_kwargs[key] = kwargs[key]
-            newnotify.data = data_kwargs
+            if data_kwargs:
+                newnotify.data = data_kwargs
 
         new_notifications.append(newnotify)
 
