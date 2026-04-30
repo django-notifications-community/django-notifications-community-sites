@@ -1,6 +1,7 @@
 """App config for notifications_sites."""
 
 from django.apps import AppConfig
+from django.core.checks import register
 from django.utils.translation import gettext_lazy as _
 
 
@@ -19,6 +20,12 @@ class Config(AppConfig):
         )
         from notifications.signals import notify
 
+        from notifications_sites.checks import (
+            check_app_ordering,
+            check_notification_model_setting,
+            check_site_id,
+            check_sites_installed,
+        )
         from notifications_sites.handlers import site_aware_notify_handler
         from notifications_sites.hooks import (
             filter_by_current_site,
@@ -27,9 +34,14 @@ class Config(AppConfig):
 
         # Replace the base's notify_handler with the site-aware variant.
         # Requires this app to come AFTER 'notifications' in INSTALLED_APPS
-        # so the base's connect() has already run.
+        # so the base's connect() has already run; check_app_ordering enforces it.
         notify.disconnect(dispatch_uid='notifications.models.notification')
         notify.connect(site_aware_notify_handler, dispatch_uid='notifications_sites.notification')
 
         register_queryset_filter(filter_by_current_site)
         register_cache_key_modifier(site_aware_cache_key)
+
+        register(check_sites_installed)
+        register(check_site_id)
+        register(check_notification_model_setting)
+        register(check_app_ordering)
