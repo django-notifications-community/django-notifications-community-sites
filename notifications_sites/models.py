@@ -12,8 +12,8 @@ _NotificationOnSiteManagerBase = CurrentSiteManager.from_queryset(NotificationQu
 class NotificationOnSiteManager(_NotificationOnSiteManagerBase):
     """CurrentSiteManager paired with NotificationQuerySet methods.
 
-    Subclassed (rather than aliased to ``CurrentSiteManager.from_queryset(...)``)
-    so that ``makemigrations`` records a stable import path for the manager.
+    Defined as a real subclass so the migration references this name
+    instead of a synthetic class produced by ``from_queryset``.
     """
 
 
