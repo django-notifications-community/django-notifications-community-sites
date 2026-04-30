@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'notifications_sites.tests.test_models',
     'notifications',
+    'notifications_sites',
 ]
 
 ROOT_URLCONF = 'notifications_sites.tests.urls'
@@ -64,6 +65,8 @@ DJANGO_NOTIFICATIONS_CONFIG = {
 USE_TZ = True
 
 SITE_ID = 1
+
+NOTIFICATIONS_NOTIFICATION_MODEL = 'notifications_sites.Notification'
 
 ALLOWED_HOSTS = []
 # notifications_sites.tests.test_models has no app config so we set this here.
