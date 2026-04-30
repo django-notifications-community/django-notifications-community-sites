@@ -30,6 +30,13 @@ class Notification(AbstractNotification):
     class Meta(AbstractNotification.Meta):
         abstract = False
         swappable = NOTIFICATION_MODEL_SETTING
+        # ``user.notifications`` uses the model's default manager, which would
+        # otherwise be the CurrentSiteManager (it sorts first by creation order
+        # in subclasses). That silently pre-filters by ``SITE_ID``, double-
+        # filtering with the registered queryset hook and disagreeing with it
+        # when the request host resolves to a different site. Pin the default
+        # to ``objects`` so the hook is the only filter.
+        default_manager_name = 'objects'
         indexes = [
             *AbstractNotification.Meta.indexes,
             models.Index(fields=['site', 'recipient', 'unread']),

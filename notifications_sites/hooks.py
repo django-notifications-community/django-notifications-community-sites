@@ -1,13 +1,27 @@
 """Hook callbacks plugged into ``notifications.registry``."""
 
 from django.contrib.sites.models import Site
-from django.contrib.sites.shortcuts import get_current_site
 
 
 def _resolve_site(request=None):
-    """Return the current site, falling back to SITE_ID when no request is available."""
+    """Return the current site for ``request``, falling back to ``SITE_ID``.
+
+    For request-bound calls we resolve by ``Host`` header first, so multi-tenant
+    Django apps see the right ``Site`` per request. Django's own
+    ``Site.objects.get_current(request)`` checks ``SITE_ID`` first and only falls
+    back to host resolution when it is unset, which is the wrong default for a
+    package whose entire purpose is multi-site routing.
+
+    If no ``Site`` row matches the request's host, fall back to the
+    ``SITE_ID``-resolved row instead of raising. That keeps things sane for
+    development hosts like ``testserver`` and for misconfigured tenants while
+    still giving a working default.
+    """
     if request is not None:
-        return get_current_site(request)
+        try:
+            return Site.objects._get_site_by_request(request)
+        except Site.DoesNotExist:
+            pass
     return Site.objects.get_current()
 
 

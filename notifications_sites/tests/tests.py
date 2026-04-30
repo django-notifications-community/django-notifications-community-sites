@@ -132,6 +132,61 @@ class ViewFilteringTest(TestCase):
         self.assertEqual(data['unread_count'], 2)
         self.assertEqual({n['verb'] for n in data['unread_list']}, {'a1', 'a2'})
 
+    @override_settings(ALLOWED_HOSTS=['*'])
+    def test_request_host_picks_site_over_site_id(self):
+        """SITE_ID=1 (site_a), but the request comes from site_b's domain → site_b wins."""
+        response = self.client.get(reverse('notifications:all'), HTTP_HOST='b.example.com')
+        verbs = {n.verb for n in response.context['notifications']}
+        self.assertEqual(verbs, {'b1'})
+
+    def test_unmatched_host_falls_back_to_site_id(self):
+        """No Site row for 'testserver' → fall through to SITE_ID=1 → site_a."""
+        response = self.client.get(reverse('notifications:all'))
+        verbs = {n.verb for n in response.context['notifications']}
+        self.assertEqual(verbs, {'a1', 'a2'})
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class ResolveSiteTest(TestCase):
+    """The hooks resolver prefers request host with SITE_ID as the request-less fallback."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+
+    def test_no_request_uses_site_id(self):
+        from notifications_sites.hooks import _resolve_site
+
+        self.assertEqual(_resolve_site().pk, self.site_a.pk)
+
+    def test_request_host_takes_precedence_over_site_id(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='b.example.com')
+        self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
+
+    def test_request_host_with_port_strips_and_matches(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='b.example.com:8000')
+        self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
+
+    def test_unmatched_host_falls_back_to_site_id(self):
+        from django.test import RequestFactory
+
+        from notifications_sites.hooks import _resolve_site
+
+        rf = RequestFactory()
+        req = rf.get('/', HTTP_HOST='nope.example.com')
+        self.assertEqual(_resolve_site(req).pk, self.site_a.pk)
+
 
 class CacheKeyNamespacingTest(TestCase):
     """Each site has its own unread-count cache key."""
