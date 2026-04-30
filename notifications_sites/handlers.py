@@ -17,6 +17,12 @@ from notifications.swappable import load_notification_model
 
 def site_aware_notify_handler(verb, **kwargs):
     """Create Notification rows on the ``notify`` signal, stamping the current site."""
+    if 'site_id' in kwargs:
+        raise TypeError(
+            "notify.send() got 'site_id'; pass a Site instance via 'site=' instead "
+            '(otherwise the value would silently land in Notification.data).'
+        )
+
     kwargs.pop('signal', None)
     recipient = kwargs.pop('recipient')
     actor = kwargs.pop('sender')
@@ -33,6 +39,13 @@ def site_aware_notify_handler(verb, **kwargs):
     level = kwargs.pop('level', Notification.LEVELS.info)
     actor_for_concrete_model = kwargs.pop('actor_for_concrete_model', True)
 
+    actor_content_type = ContentType.objects.get_for_model(actor, for_concrete_model=actor_for_concrete_model)
+    optional_content_types = {
+        opt: ContentType.objects.get_for_model(obj, for_concrete_model=kwargs.get(f'{opt}_for_concrete_model', True))
+        for obj, opt in optional_objs
+        if obj is not None
+    }
+
     if isinstance(recipient, Group):
         recipients = recipient.user_set.all()
     elif isinstance(recipient, QuerySet | list):
@@ -45,7 +58,7 @@ def site_aware_notify_handler(verb, **kwargs):
     for recipient in recipients:
         newnotify = Notification(
             recipient=recipient,
-            actor_content_type=ContentType.objects.get_for_model(actor, for_concrete_model=actor_for_concrete_model),
+            actor_content_type=actor_content_type,
             actor_object_id=actor.pk,
             verb=str(verb),
             public=public,
@@ -57,13 +70,8 @@ def site_aware_notify_handler(verb, **kwargs):
 
         for obj, opt in optional_objs:
             if obj is not None:
-                for_concrete_model = kwargs.get(f'{opt}_for_concrete_model', True)
                 setattr(newnotify, f'{opt}_object_id', obj.pk)
-                setattr(
-                    newnotify,
-                    f'{opt}_content_type',
-                    ContentType.objects.get_for_model(obj, for_concrete_model=for_concrete_model),
-                )
+                setattr(newnotify, f'{opt}_content_type', optional_content_types[opt])
 
         if kwargs and get_config()['USE_JSONFIELD']:
             data_kwargs = {}

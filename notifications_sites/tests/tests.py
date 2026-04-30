@@ -47,6 +47,11 @@ class NotifyHandlerSiteStampingTest(TestCase):
         n = Notification.objects.get(recipient=self.to_user)
         self.assertEqual(n.site_id, self.site_b.pk)
 
+    def test_site_id_kwarg_is_rejected(self):
+        """Passing site_id= is a typo for site=; reject loudly so it doesn't land in data."""
+        with self.assertRaises(TypeError):
+            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site_id=self.site_b.pk)
+
 
 class ViewFilteringTest(TestCase):
     """Base views filter by the current site via the registered hook."""
