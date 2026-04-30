@@ -1,9 +1,11 @@
 """Site-aware replacement for ``notifications.base.models.notify_handler``.
 
 Stamps ``Site.objects.get_current()`` (or the explicit ``site=`` kwarg)
-on each notification. Otherwise mirrors the base handler verbatim. The
-companion's ``apps.ready()`` disconnects the base handler and connects
-this one in its place.
+on each notification. Mostly tracks the base handler, with a couple of
+small departures: a ``TypeError`` for the ``site_id=`` typo and the
+actor/target ContentType lookups hoisted out of the per-recipient loop.
+The companion's ``apps.ready()`` disconnects the base handler and
+connects this one in its place.
 """
 
 from django.contrib.auth.models import Group
