@@ -2,5 +2,10 @@ This package builds on django-notifications (Justin Quick et al.) and
 django-notifications-community (the community fork). See those projects'
 AUTHORS files for the full upstream contributor list.
 
+Guillaume Libersat <glibersat@sigill.org> prototyped the multi-site
+model and signal stamping pattern in his feature/sites-framework
+branch on django-notifications:
+https://github.com/glibersat/django-notifications/tree/feature/sites-framework
+
 --- django-notifications-community-sites ---
 je-bugshell (https://github.com/je-bugshell)

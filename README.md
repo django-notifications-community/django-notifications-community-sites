@@ -76,12 +76,13 @@ The base's `notify_handler` is replaced with a site-aware variant that stamps
 The base's views, helpers, and template tags are reused unchanged through the
 hooks. No URL or template changes required.
 
-## Migrating from the feature branch
+## Migrating from the upstream feature branch
 
-If you were previously running on the unmerged `feature/sites-framework`
-branch of `django-notifications-community`, your existing rows live in
-`notifications_notification`. The companion's second migration copies them
-into `notifications_sites_notification` and falls back to `SITE_ID` for any
+If you were previously running on Guillaume Libersat's
+[`feature/sites-framework`](https://github.com/glibersat/django-notifications/tree/feature/sites-framework)
+branch, your existing rows live in `notifications_notification`. The
+companion's second migration copies them into
+`notifications_sites_notification` and falls back to `SITE_ID` for any
 row whose `site` was `NULL`.
 
 ## License
