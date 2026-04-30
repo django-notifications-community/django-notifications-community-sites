@@ -9,3 +9,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial release. Concrete `Notification` model with non-nullable
   `site` FK, site-aware notify handler, admin override, and system
   checks. Plugs into `django-notifications-community`'s registry hooks.
+- Ships an opt-in `copy_legacy_notifications` management command for
+  users upgrading from a base-only or feature-branch install. Idempotent
+  by default (refuses to copy when the target already has rows unless
+  `--force`), with `--dry-run` and an explicit `--default-site` to
+  avoid silent assumptions.

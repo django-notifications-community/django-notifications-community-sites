@@ -1,13 +1,19 @@
 """Tests for notifications_sites."""
 
+from io import StringIO
 from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.sites.models import Site
 from django.core.cache import cache
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from notifications.signals import notify
 from notifications.swappable import load_notification_model
 
@@ -243,3 +249,169 @@ class SystemCheckTest(TestCase):
             errors = check_app_ordering(None)
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].id, 'notifications_sites.E004')
+
+
+class CopyLegacyNotificationsCommandTest(TestCase):
+    """Opt-in management command to migrate legacy notifications_notification rows."""
+
+    BASE_COLS_SQL = """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        level VARCHAR(20) NOT NULL DEFAULT 'info',
+        recipient_id INTEGER NOT NULL,
+        unread BOOLEAN NOT NULL DEFAULT 1,
+        actor_content_type_id INTEGER NOT NULL,
+        actor_object_id VARCHAR(255) NOT NULL,
+        verb VARCHAR(255) NOT NULL,
+        description TEXT,
+        target_content_type_id INTEGER,
+        target_object_id VARCHAR(255),
+        action_object_content_type_id INTEGER,
+        action_object_object_id VARCHAR(255),
+        timestamp DATETIME NOT NULL,
+        public BOOLEAN NOT NULL DEFAULT 1,
+        deleted BOOLEAN NOT NULL DEFAULT 0,
+        emailed BOOLEAN NOT NULL DEFAULT 0,
+        data TEXT
+    """
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='legacy_from', password='pwd')
+        self.to_user = User.objects.create_user(username='legacy_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+
+    def _create_legacy_table(self, with_site_column=False):
+        cols_sql = self.BASE_COLS_SQL
+        if with_site_column:
+            cols_sql += ', site_id INTEGER'
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+            cursor.execute(f'CREATE TABLE notifications_notification ({cols_sql})')
+        self.addCleanup(self._drop_legacy_table)
+
+    def _drop_legacy_table(self):
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
+
+    def _insert_legacy_row(self, verb, site_id=None, with_site_column=True):
+        ct = ContentType.objects.get_for_model(self.from_user)
+        cols = [
+            'level',
+            'recipient_id',
+            'unread',
+            'actor_content_type_id',
+            'actor_object_id',
+            'verb',
+            'description',
+            'target_content_type_id',
+            'target_object_id',
+            'action_object_content_type_id',
+            'action_object_object_id',
+            'timestamp',
+            'public',
+            'deleted',
+            'emailed',
+            'data',
+        ]
+        values = [
+            'info',
+            self.to_user.pk,
+            True,
+            ct.pk,
+            str(self.from_user.pk),
+            verb,
+            None,
+            None,
+            None,
+            None,
+            None,
+            timezone.now(),
+            True,
+            False,
+            False,
+            None,
+        ]
+        if with_site_column:
+            cols.append('site_id')
+            values.append(site_id)
+        placeholders = ', '.join(['%s'] * len(cols))
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f'INSERT INTO notifications_notification ({", ".join(cols)}) VALUES ({placeholders})',
+                values,
+            )
+
+    def test_noop_when_source_table_missing(self):
+        out = StringIO()
+        call_command('copy_legacy_notifications', stdout=out)
+        self.assertIn('nothing to copy', out.getvalue().lower())
+        self.assertEqual(load_notification_model().objects.count(), 0)
+
+    def test_noop_when_source_empty(self):
+        self._create_legacy_table(with_site_column=False)
+        out = StringIO()
+        call_command('copy_legacy_notifications', stdout=out)
+        self.assertEqual(load_notification_model().objects.count(), 0)
+        self.assertIn('nothing to copy', out.getvalue().lower())
+
+    def test_copies_rows_with_default_site_when_no_site_column(self):
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('legacy_1', with_site_column=False)
+        self._insert_legacy_row('legacy_2', with_site_column=False)
+        out = StringIO()
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
+        N = load_notification_model()
+        self.assertEqual(N.objects.count(), 2)
+        for n in N.objects.all():
+            self.assertEqual(n.site_id, self.site_a.pk)
+
+    def test_preserves_explicit_site_id_and_fills_null(self):
+        self._create_legacy_table(with_site_column=True)
+        self._insert_legacy_row('null_site', site_id=None)
+        self._insert_legacy_row('on_site_a', site_id=self.site_a.pk)
+        self._insert_legacy_row('on_site_b', site_id=self.site_b.pk)
+        out = StringIO()
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
+        N = load_notification_model()
+        self.assertEqual(N.objects.count(), 3)
+        self.assertEqual(N.objects.get(verb='null_site').site_id, self.site_a.pk)
+        self.assertEqual(N.objects.get(verb='on_site_a').site_id, self.site_a.pk)
+        self.assertEqual(N.objects.get(verb='on_site_b').site_id, self.site_b.pk)
+
+    def test_dry_run_writes_nothing(self):
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('only_one', with_site_column=False)
+        out = StringIO()
+        call_command('copy_legacy_notifications', dry_run=True, stdout=out)
+        self.assertEqual(load_notification_model().objects.count(), 0)
+        self.assertIn('DRY RUN', out.getvalue())
+
+    def test_errors_when_default_site_required_but_missing(self):
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('orphan', with_site_column=False)
+        with self.assertRaises(CommandError):
+            call_command('copy_legacy_notifications')
+
+    def test_errors_when_target_already_has_rows(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='already_here', site=self.site_a)
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('legacy', with_site_column=False)
+        with self.assertRaises(CommandError):
+            call_command('copy_legacy_notifications', default_site=self.site_a.pk)
+
+    def test_force_copies_even_when_target_has_rows(self):
+        notify.send(self.from_user, recipient=self.to_user, verb='already_here', site=self.site_a)
+        N = load_notification_model()
+        before = N.objects.count()
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('legacy', with_site_column=False)
+        out = StringIO()
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, force=True, stdout=out)
+        self.assertEqual(N.objects.count(), before + 1)
+
+    def test_errors_when_default_site_does_not_exist(self):
+        self._create_legacy_table(with_site_column=False)
+        self._insert_legacy_row('orphan', with_site_column=False)
+        with self.assertRaises(CommandError):
+            call_command('copy_legacy_notifications', default_site=9999)

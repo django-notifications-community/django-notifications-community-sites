@@ -80,41 +80,36 @@ hooks. No URL or template changes required.
 
 The companion does not auto-copy rows from `notifications_notification`
 into `notifications_sites_notification`. The reasoning: there's no
-correct default for which site a row should belong to, and a migration
-that silently picks `SITE_ID` would be wrong for anyone running more
-than one site. Two options:
+correct default for which site a legacy row should belong to, and a
+migration that silently picks `SITE_ID` would be wrong for anyone
+running more than one site. Two options:
 
 **Start fresh.** Install the companion as documented above. Future
 notifications land in `notifications_sites_notification`. Existing
 rows stay in `notifications_notification` until you drop the table
 yourself.
 
-**Copy legacy rows over.** Run the SQL below in a transaction,
-replacing `<your-default-site-id>` with the `Site` PK that
-unassigned notifications should belong to. Drop the `COALESCE` if
-your base table never had a `site_id` column (i.e. you were on plain
-`django-notifications-community`, not Guillaume Libersat's
-[`feature/sites-framework`](https://github.com/glibersat/django-notifications/tree/feature/sites-framework)
-branch).
+**Copy legacy rows over with the bundled command.** Run:
 
-```sql
-INSERT INTO notifications_sites_notification (
-    level, recipient_id, unread,
-    actor_content_type_id, actor_object_id, verb, description,
-    target_content_type_id, target_object_id,
-    action_object_content_type_id, action_object_object_id,
-    timestamp, public, deleted, emailed, data,
-    site_id
-)
-SELECT
-    level, recipient_id, unread,
-    actor_content_type_id, actor_object_id, verb, description,
-    target_content_type_id, target_object_id,
-    action_object_content_type_id, action_object_object_id,
-    timestamp, public, deleted, emailed, data,
-    COALESCE(site_id, <your-default-site-id>)
-FROM notifications_notification;
+```bash
+python manage.py copy_legacy_notifications --default-site=<pk>
 ```
+
+`<pk>` is the `Site` primary key to assign to rows whose `site_id` is
+`NULL`, or to every row when the source table has no `site_id` column
+at all (i.e. you were on plain `django-notifications-community`, not
+Guillaume Libersat's
+[`feature/sites-framework`](https://github.com/glibersat/django-notifications/tree/feature/sites-framework)
+branch). Existing `site_id` values are preserved.
+
+Useful flags:
+
+- `--dry-run` — report what would be copied without writing.
+- `--force` — copy even if `notifications_sites_notification` already
+  has rows (off by default to avoid duplicates).
+
+The copy runs in a single transaction. After verifying everything
+landed, you can drop `notifications_notification` yourself.
 
 ## License
 
