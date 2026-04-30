@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.0.1 - 2026-04-30
 
 - Widen `Notification.id` to `BigAutoField` (migration 0002).
 - `notify.send(site_id=...)` now raises `TypeError`. Pass a `Site` via `site=`.
