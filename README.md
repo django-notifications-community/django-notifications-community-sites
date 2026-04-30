@@ -56,6 +56,10 @@ python manage.py migrate
 ```
 
 `SITE_ID` is required; the system check will tell you if it's missing.
+`NOTIFICATIONS_NOTIFICATION_MODEL` must point at the companion model;
+the system check will tell you if it doesn't (silence with
+`SILENCED_SYSTEM_CHECKS = ['notifications_sites.E003']` if you're
+subclassing the companion).
 
 ## How it works
 
@@ -84,6 +88,19 @@ tenant N. Pass `site=` explicitly from background jobs:
 ```python
 notify.send(actor, recipient=user, verb='ping', site=tenant_site)
 ```
+
+### `SITE_ID` precedence over the request host
+
+Django's `Site.objects.get_current(request)` returns the row whose primary key
+matches `SITE_ID` if that setting is set, ignoring the request host. So
+domain-based multi-tenancy (running multiple sites off `Host`-driven routing)
+needs `SITE_ID = None` so `get_current()` falls back to resolving by host. This
+is a Django behavior, not specific to this companion, but it is the most
+common surprise once you install the package.
+
+If you change `SITE_ID` mid-process (in tests, for example), call
+`Site.objects.clear_cache()` afterwards or `get_current()` will keep returning
+the previously-resolved row.
 
 ## Bringing existing data over
 
