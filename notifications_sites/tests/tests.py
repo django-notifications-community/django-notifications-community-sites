@@ -415,3 +415,202 @@ class CopyLegacyNotificationsCommandTest(TestCase):
         self._insert_legacy_row('orphan', with_site_column=False)
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications', default_site=9999)
+
+
+class RecipientVariantTest(TestCase):
+    """notify.send fan-out paths each stamp every produced row with a site."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='rv_from', password='pwd')
+        self.to_user_1 = User.objects.create_user(username='rv_to_1', password='pwd')
+        self.to_user_2 = User.objects.create_user(username='rv_to_2', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+
+    def test_group_recipient_each_member_stamped(self):
+        from django.contrib.auth.models import Group
+
+        group = Group.objects.create(name='testers')
+        group.user_set.add(self.to_user_1, self.to_user_2)
+        notify.send(self.from_user, recipient=group, verb='group_msg', site=self.site_b)
+        notifications = Notification.objects.filter(verb='group_msg')
+        self.assertEqual(notifications.count(), 2)
+        for n in notifications:
+            self.assertEqual(n.site_id, self.site_b.pk)
+        self.assertSetEqual(
+            {n.recipient_id for n in notifications},
+            {self.to_user_1.pk, self.to_user_2.pk},
+        )
+
+    def test_list_recipient_each_stamped(self):
+        notify.send(
+            self.from_user,
+            recipient=[self.to_user_1, self.to_user_2],
+            verb='list_msg',
+            site=self.site_b,
+        )
+        notifications = Notification.objects.filter(verb='list_msg')
+        self.assertEqual(notifications.count(), 2)
+        for n in notifications:
+            self.assertEqual(n.site_id, self.site_b.pk)
+
+    def test_queryset_recipient_each_stamped(self):
+        qs = User.objects.filter(username__startswith='rv_to_')
+        notify.send(self.from_user, recipient=qs, verb='qs_msg', site=self.site_a)
+        notifications = Notification.objects.filter(verb='qs_msg')
+        self.assertEqual(notifications.count(), 2)
+        for n in notifications:
+            self.assertEqual(n.site_id, self.site_a.pk)
+
+    def test_single_recipient_produces_exactly_one_row(self):
+        """Confirms the base signal handler isn't still attached alongside ours."""
+        notify.send(self.from_user, recipient=self.to_user_1, verb='solo')
+        self.assertEqual(Notification.objects.filter(verb='solo').count(), 1)
+
+
+class InheritedManagerTest(TestCase):
+    """Manager methods defined on AbstractNotification still work on the swapped model."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        self.from_user = User.objects.create_user(username='im_from', password='pwd')
+        self.to_user = User.objects.create_user(username='im_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        for i in range(3):
+            notify.send(self.from_user, recipient=self.to_user, verb=f'm{i}', site=self.site_a)
+        notify.send(self.from_user, recipient=self.to_user, verb='m_b', site=self.site_b)
+
+    def test_unread_manager(self):
+        self.assertEqual(Notification.objects.unread().count(), 4)
+        n = Notification.objects.first()
+        n.mark_as_read()
+        self.assertEqual(Notification.objects.unread().count(), 3)
+
+    def test_read_manager(self):
+        n = Notification.objects.filter(verb='m0').first()
+        n.mark_as_read()
+        self.assertEqual(Notification.objects.read().count(), 1)
+        self.assertEqual(Notification.objects.read().first().verb, 'm0')
+
+    def test_mark_all_as_read_at_manager_level(self):
+        Notification.objects.mark_all_as_read()
+        self.assertEqual(Notification.objects.unread().count(), 0)
+
+    def test_on_site_manager_returns_current_site_only(self):
+        with override_settings(SITE_ID=self.site_a.pk):
+            Site.objects.clear_cache()
+            self.assertEqual(Notification.on_site.count(), 3)
+            self.assertSetEqual(
+                {n.verb for n in Notification.on_site.all()},
+                {'m0', 'm1', 'm2'},
+            )
+        with override_settings(SITE_ID=self.site_b.pk):
+            Site.objects.clear_cache()
+            self.assertEqual(Notification.on_site.count(), 1)
+            self.assertEqual(Notification.on_site.first().verb, 'm_b')
+
+    def test_on_site_chains_with_queryset_methods(self):
+        """on_site.unread() returns NotificationQuerySet methods on top of CurrentSiteManager."""
+        with override_settings(SITE_ID=self.site_a.pk):
+            Site.objects.clear_cache()
+            self.assertEqual(Notification.on_site.unread().count(), 3)
+
+
+class TemplateTagDirectTest(TestCase):
+    """Template tag callables work outside of a request context."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        cache.clear()
+        self.from_user = User.objects.create_user(username='tt_from', password='pwd')
+        self.to_user = User.objects.create_user(username='tt_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+
+    def test_has_notification_filter_with_unread_rows(self):
+        from notifications.templatetags.notifications_tags import has_notification
+
+        notify.send(self.from_user, recipient=self.to_user, verb='hi', site=self.site_a)
+        self.assertTrue(has_notification(self.to_user))
+
+    def test_has_notification_filter_with_no_rows(self):
+        from notifications.templatetags.notifications_tags import has_notification
+
+        self.assertFalse(has_notification(self.to_user))
+
+    def test_has_notification_filter_with_anonymous_user(self):
+        from notifications.templatetags.notifications_tags import has_notification
+
+        self.assertFalse(has_notification(None))
+
+    def test_unread_count_cache_key_uses_current_site(self):
+        from notifications.templatetags.notifications_tags import unread_count_cache_key
+
+        key = unread_count_cache_key(self.to_user)
+        self.assertIn(f'site_{self.site_a.pk}', key)
+
+
+class AnonymousAccessTest(TestCase):
+    """Anonymous users get sensible empty responses from the live endpoints."""
+
+    def test_live_unread_count_anonymous(self):
+        response = self.client.get(reverse('notifications:live_unread_notification_count'))
+        self.assertEqual(response.json(), {'unread_count': 0})
+
+    def test_live_all_count_anonymous(self):
+        response = self.client.get(reverse('notifications:live_all_notification_count'))
+        self.assertEqual(response.json(), {'all_count': 0})
+
+    def test_live_unread_list_anonymous(self):
+        response = self.client.get(reverse('notifications:live_unread_notification_list'))
+        self.assertEqual(response.json(), {'unread_count': 0, 'unread_list': []})
+
+    def test_live_all_list_anonymous(self):
+        response = self.client.get(reverse('notifications:live_all_notification_list'))
+        self.assertEqual(response.json(), {'all_count': 0, 'all_list': []})
+
+    def test_list_view_anonymous_redirects(self):
+        response = self.client.get(reverse('notifications:all'))
+        self.assertEqual(response.status_code, 302)
+
+
+class SoftDeleteSitesInteractionTest(TestCase):
+    """SOFT_DELETE config still works alongside site scoping."""
+
+    def setUp(self):
+        Site.objects.clear_cache()
+        cache.clear()
+        self.from_user = User.objects.create_user(username='sd_from', password='pwd')
+        self.to_user = User.objects.create_user(username='sd_to', password='pwd')
+        self.site_a = Site.objects.get(pk=1)
+        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        notify.send(self.from_user, recipient=self.to_user, verb='soft_a', site=self.site_a)
+        notify.send(self.from_user, recipient=self.to_user, verb='soft_b', site=self.site_b)
+        self.client.force_login(self.to_user)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'SOFT_DELETE': True, 'USE_JSONFIELD': True})
+    def test_soft_delete_blocks_cross_site_request(self):
+        n_b = Notification.objects.get(verb='soft_b')
+        response = self.client.post(reverse('notifications:delete', kwargs={'slug': n_b.slug}))
+        self.assertEqual(response.status_code, 404)
+        n_b.refresh_from_db()
+        self.assertFalse(n_b.deleted)
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'SOFT_DELETE': True, 'USE_JSONFIELD': True})
+    def test_soft_delete_succeeds_on_same_site(self):
+        n_a = Notification.objects.get(verb='soft_a')
+        response = self.client.post(reverse('notifications:delete', kwargs={'slug': n_a.slug}))
+        self.assertEqual(response.status_code, 302)
+        n_a.refresh_from_db()
+        self.assertTrue(n_a.deleted)
+        # Row is not removed
+        self.assertTrue(Notification.objects.filter(pk=n_a.pk).exists())
+
+    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'SOFT_DELETE': True, 'USE_JSONFIELD': True})
+    def test_all_view_excludes_soft_deleted_on_current_site(self):
+        n_a = Notification.objects.get(verb='soft_a')
+        n_a.deleted = True
+        n_a.save(update_fields=['deleted'])
+        response = self.client.get(reverse('notifications:all'))
+        self.assertEqual(list(response.context['notifications']), [])
