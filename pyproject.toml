@@ -47,8 +47,13 @@ Changelog = "https://github.com/django-notifications-community/django-notificati
 [tool.setuptools_scm]
 fallback_version = "0.0.0.dev0"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["notifications_sites*"]
+exclude = ["notifications_sites.tests", "notifications_sites.tests.*"]
+namespaces = false
 
 [tool.ruff]
 target-version = "py310"
