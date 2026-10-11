@@ -4,31 +4,55 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.sites.models import Site
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import connection
-from django.test import TestCase, override_settings
+from django.db import connections
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from notifications.signals import notify
 from notifications.swappable import load_notification_model
+from notifications.templatetags.notifications_tags import (
+    get_cached_notification_unread_count,
+    has_notification,
+    unread_count_cache_key,
+)
+
+from notifications_sites.admin import NotificationAdmin
+from notifications_sites.checks import (
+    check_app_ordering,
+    check_notification_model_setting,
+    check_site_id,
+    check_sites_installed,
+)
+from notifications_sites.hooks import _resolve_site
+from notifications_sites.management.commands.copy_legacy_notifications import BASE_COLS
 
 Notification = load_notification_model()
 
 
-class NotifyHandlerSiteStampingTest(TestCase):
-    """The site-aware notify_handler stamps each notification with a site."""
+def unread_key(user, site):
+    return f'notifications_unread_count_{user.pk}_site_{site.pk}'
+
+
+class SiteTestCase(TestCase):
+    """Two users and two sites, with the site and unread-count caches cleared."""
 
     def setUp(self):
         Site.objects.clear_cache()
+        cache.clear()
         self.from_user = User.objects.create_user(username='from', password='pwd')
         self.to_user = User.objects.create_user(username='to', password='pwd')
         self.site_a = Site.objects.get(pk=1)
         self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+
+
+class NotifyHandlerSiteStampingTest(SiteTestCase):
+    """The site-aware notify_handler stamps each notification with a site."""
 
     def test_default_site_from_site_id(self):
         notify.send(self.from_user, recipient=self.to_user, verb='pinged')
@@ -71,16 +95,11 @@ class NotifyHandlerSiteStampingTest(TestCase):
         self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
 
 
-class ViewFilteringTest(TestCase):
+class ViewFilteringTest(SiteTestCase):
     """Base views filter by the current site via the registered hook."""
 
     def setUp(self):
-        Site.objects.clear_cache()
-        cache.clear()
-        self.from_user = User.objects.create_user(username='from', password='pwd')
-        self.to_user = User.objects.create_user(username='to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        super().setUp()
         notify.send(self.from_user, recipient=self.to_user, verb='a1', site=self.site_a)
         notify.send(self.from_user, recipient=self.to_user, verb='a2', site=self.site_a)
         notify.send(self.from_user, recipient=self.to_user, verb='b1', site=self.site_b)
@@ -156,70 +175,33 @@ class ViewFilteringTest(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=['*'])
-class ResolveSiteTest(TestCase):
+class ResolveSiteTest(SiteTestCase):
     """The hooks resolver prefers request host with SITE_ID as the request-less fallback."""
 
-    def setUp(self):
-        Site.objects.clear_cache()
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
-
     def test_no_request_uses_site_id(self):
-        from notifications_sites.hooks import _resolve_site
-
         self.assertEqual(_resolve_site().pk, self.site_a.pk)
 
     def test_request_host_takes_precedence_over_site_id(self):
-        from django.test import RequestFactory
-
-        from notifications_sites.hooks import _resolve_site
-
-        rf = RequestFactory()
-        req = rf.get('/', HTTP_HOST='b.example.com')
+        req = RequestFactory().get('/', HTTP_HOST='b.example.com')
         self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
 
     def test_request_host_with_port_strips_and_matches(self):
-        from django.test import RequestFactory
-
-        from notifications_sites.hooks import _resolve_site
-
-        rf = RequestFactory()
-        req = rf.get('/', HTTP_HOST='b.example.com:8000')
+        req = RequestFactory().get('/', HTTP_HOST='b.example.com:8000')
         self.assertEqual(_resolve_site(req).pk, self.site_b.pk)
 
     def test_unmatched_host_falls_back_to_site_id(self):
-        from django.test import RequestFactory
-
-        from notifications_sites.hooks import _resolve_site
-
-        rf = RequestFactory()
-        req = rf.get('/', HTTP_HOST='nope.example.com')
+        req = RequestFactory().get('/', HTTP_HOST='nope.example.com')
         self.assertEqual(_resolve_site(req).pk, self.site_a.pk)
 
 
-class CacheKeyNamespacingTest(TestCase):
+class CacheKeyNamespacingTest(SiteTestCase):
     """Each site has its own unread-count cache key."""
 
-    def setUp(self):
-        Site.objects.clear_cache()
-        cache.clear()
-        self.from_user = User.objects.create_user(username='from', password='pwd')
-        self.to_user = User.objects.create_user(username='to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
-
     def test_cache_key_includes_site_pk(self):
-        from notifications.templatetags.notifications_tags import unread_count_cache_key
-
-        self.assertEqual(
-            unread_count_cache_key(self.to_user),
-            f'notifications_unread_count_{self.to_user.pk}_site_{self.site_a.pk}',
-        )
+        self.assertEqual(unread_count_cache_key(self.to_user), unread_key(self.to_user, self.site_a))
 
     @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'CACHE_TIMEOUT': 60, 'USE_JSONFIELD': True})
     def test_concurrent_site_caches_do_not_collide(self):
-        from notifications.templatetags.notifications_tags import get_cached_notification_unread_count
-
         notify.send(self.from_user, recipient=self.to_user, verb='a', site=self.site_a)
         notify.send(self.from_user, recipient=self.to_user, verb='b', site=self.site_b)
 
@@ -232,18 +214,14 @@ class CacheKeyNamespacingTest(TestCase):
 
         self.assertEqual(count_a, 1)
         self.assertEqual(count_b, 1)
-        key_a = f'notifications_unread_count_{self.to_user.pk}_site_{self.site_a.pk}'
-        key_b = f'notifications_unread_count_{self.to_user.pk}_site_{self.site_b.pk}'
-        self.assertEqual(cache.get(key_a), 1)
-        self.assertEqual(cache.get(key_b), 1)
+        self.assertEqual(cache.get(unread_key(self.to_user, self.site_a)), 1)
+        self.assertEqual(cache.get(unread_key(self.to_user, self.site_b)), 1)
 
     @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'CACHE_TIMEOUT': 60, 'USE_JSONFIELD': True})
     def test_mark_as_read_invalidates_current_site_cache(self):
         notify.send(self.from_user, recipient=self.to_user, verb='a', site=self.site_a)
-        from notifications.templatetags.notifications_tags import get_cached_notification_unread_count
-
         get_cached_notification_unread_count(self.to_user)
-        key_a = f'notifications_unread_count_{self.to_user.pk}_site_{self.site_a.pk}'
+        key_a = unread_key(self.to_user, self.site_a)
         self.assertEqual(cache.get(key_a), 1)
 
         n = Notification.objects.first()
@@ -256,14 +234,10 @@ class AdminTest(TestCase):
     """The companion admin includes the site column."""
 
     def test_list_display_includes_site(self):
-        from notifications_sites.admin import NotificationAdmin
-
         adm = NotificationAdmin(Notification, None)
         self.assertIn('site', adm.get_list_display(None))
 
     def test_list_filter_includes_site(self):
-        from notifications_sites.admin import NotificationAdmin
-
         adm = NotificationAdmin(Notification, None)
         self.assertIn('site', adm.get_list_filter(None))
 
@@ -272,52 +246,36 @@ class SystemCheckTest(TestCase):
     """System checks fire on misconfiguration and pass when configured correctly."""
 
     def test_sites_installed_passes(self):
-        from notifications_sites.checks import check_sites_installed
-
         self.assertEqual(check_sites_installed(None), [])
 
     @override_settings(INSTALLED_APPS=[a for a in settings.INSTALLED_APPS if a != 'django.contrib.sites'])
     def test_sites_installed_errors(self):
-        from notifications_sites.checks import check_sites_installed
-
         errors = check_sites_installed(None)
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].id, 'notifications_sites.E001')
 
     def test_site_id_passes(self):
-        from notifications_sites.checks import check_site_id
-
         self.assertEqual(check_site_id(None), [])
 
     @override_settings(SITE_ID=None)
     def test_site_id_errors_when_unset(self):
-        from notifications_sites.checks import check_site_id
-
         errors = check_site_id(None)
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].id, 'notifications_sites.E002')
 
     def test_notification_model_setting_passes(self):
-        from notifications_sites.checks import check_notification_model_setting
-
         self.assertEqual(check_notification_model_setting(None), [])
 
     @override_settings(NOTIFICATIONS_NOTIFICATION_MODEL='myapp.MyNotification')
     def test_notification_model_setting_errors_on_mismatch(self):
-        from notifications_sites.checks import check_notification_model_setting
-
         errors = check_notification_model_setting(None)
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].id, 'notifications_sites.E003')
 
     def test_app_ordering_passes(self):
-        from notifications_sites.checks import check_app_ordering
-
         self.assertEqual(check_app_ordering(None), [])
 
     def test_app_ordering_errors_when_misordered(self):
-        from notifications_sites.checks import check_app_ordering
-
         fake_configs = {
             'admin': None,
             'notifications_sites': None,
@@ -329,331 +287,216 @@ class SystemCheckTest(TestCase):
         self.assertEqual(errors[0].id, 'notifications_sites.E004')
 
 
-class CopyLegacyNotificationsCommandTest(TestCase):
-    """Opt-in management command to migrate legacy notifications_notification rows."""
+# Column DDL of the legacy notifications_notification table, as the base
+# package's standard migration produces it on SQLite.
+LEGACY_COLUMNS = {
+    'id': 'INTEGER PRIMARY KEY AUTOINCREMENT',
+    'level': "VARCHAR(20) NOT NULL DEFAULT 'info'",
+    'recipient_id': 'INTEGER NOT NULL',
+    'unread': 'BOOLEAN NOT NULL DEFAULT 1',
+    'actor_content_type_id': 'INTEGER NOT NULL',
+    'actor_object_id': 'VARCHAR(255) NOT NULL',
+    'verb': 'VARCHAR(255) NOT NULL',
+    'description': 'TEXT',
+    'target_content_type_id': 'INTEGER',
+    'target_object_id': 'VARCHAR(255)',
+    'action_object_content_type_id': 'INTEGER',
+    'action_object_object_id': 'VARCHAR(255)',
+    'timestamp': 'DATETIME NOT NULL',
+    'public': 'BOOLEAN NOT NULL DEFAULT 1',
+    'deleted': 'BOOLEAN NOT NULL DEFAULT 0',
+    'emailed': 'BOOLEAN NOT NULL DEFAULT 0',
+    'data': 'TEXT',
+}
 
-    BASE_COLS_SQL = """
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        level VARCHAR(20) NOT NULL DEFAULT 'info',
-        recipient_id INTEGER NOT NULL,
-        unread BOOLEAN NOT NULL DEFAULT 1,
-        actor_content_type_id INTEGER NOT NULL,
-        actor_object_id VARCHAR(255) NOT NULL,
-        verb VARCHAR(255) NOT NULL,
-        description TEXT,
-        target_content_type_id INTEGER,
-        target_object_id VARCHAR(255),
-        action_object_content_type_id INTEGER,
-        action_object_object_id VARCHAR(255),
-        timestamp DATETIME NOT NULL,
-        public BOOLEAN NOT NULL DEFAULT 1,
-        deleted BOOLEAN NOT NULL DEFAULT 0,
-        emailed BOOLEAN NOT NULL DEFAULT 0,
-        data TEXT
-    """
 
-    def setUp(self):
-        Site.objects.clear_cache()
-        self.from_user = User.objects.create_user(username='legacy_from', password='pwd')
-        self.to_user = User.objects.create_user(username='legacy_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+class LegacyTableMixin:
+    """Helpers to build and fill a legacy notifications_notification table on any alias."""
 
-    def _create_legacy_table(self, with_site_column=False):
-        cols_sql = self.BASE_COLS_SQL
+    def create_legacy_table(self, alias='default', columns=LEGACY_COLUMNS, with_site_column=False):
+        columns = dict(columns)
         if with_site_column:
-            cols_sql += ', site_id INTEGER'
-        with connection.cursor() as cursor:
+            columns['site_id'] = 'INTEGER'
+        ddl = ', '.join(f'{name} {spec}' for name, spec in columns.items())
+        with connections[alias].cursor() as cursor:
             cursor.execute('DROP TABLE IF EXISTS notifications_notification')
-            cursor.execute(f'CREATE TABLE notifications_notification ({cols_sql})')
-        self.addCleanup(self._drop_legacy_table)
+            cursor.execute(f'CREATE TABLE notifications_notification ({ddl})')
+        self.addCleanup(self.drop_legacy_table, alias)
 
-    def _drop_legacy_table(self):
-        with connection.cursor() as cursor:
+    def drop_legacy_table(self, alias):
+        with connections[alias].cursor() as cursor:
             cursor.execute('DROP TABLE IF EXISTS notifications_notification')
 
-    def _insert_legacy_row(self, verb, site_id=None, with_site_column=True):
-        ct = ContentType.objects.get_for_model(self.from_user)
-        cols = [
-            'level',
-            'recipient_id',
-            'unread',
-            'actor_content_type_id',
-            'actor_object_id',
-            'verb',
-            'description',
-            'target_content_type_id',
-            'target_object_id',
-            'action_object_content_type_id',
-            'action_object_object_id',
-            'timestamp',
-            'public',
-            'deleted',
-            'emailed',
-            'data',
-        ]
-        values = [
-            'info',
-            self.to_user.pk,
-            True,
-            ct.pk,
-            str(self.from_user.pk),
-            verb,
-            None,
-            None,
-            None,
-            None,
-            None,
-            timezone.now(),
-            True,
-            False,
-            False,
-            None,
-        ]
+    def insert_legacy_row(
+        self, verb, alias='default', columns=BASE_COLS, with_site_column=False, site_id=None, recipient=None, actor=None
+    ):
+        recipient = recipient or self.to_user
+        actor = actor or self.from_user
+        ct = ContentType.objects.db_manager(alias).get_for_model(User)
+        values = {
+            'level': 'info',
+            'recipient_id': recipient.pk,
+            'unread': True,
+            'actor_content_type_id': ct.pk,
+            'actor_object_id': str(actor.pk),
+            'verb': verb,
+            'description': None,
+            'target_content_type_id': None,
+            'target_object_id': None,
+            'action_object_content_type_id': None,
+            'action_object_object_id': None,
+            'timestamp': timezone.now(),
+            'public': True,
+            'deleted': False,
+            'emailed': False,
+            'data': None,
+        }
+        cols = list(columns)
         if with_site_column:
             cols.append('site_id')
-            values.append(site_id)
+            values['site_id'] = site_id
         placeholders = ', '.join(['%s'] * len(cols))
-        with connection.cursor() as cursor:
+        with connections[alias].cursor() as cursor:
             cursor.execute(
                 f'INSERT INTO notifications_notification ({", ".join(cols)}) VALUES ({placeholders})',
-                values,
+                [values[c] for c in cols],
             )
+
+
+class CopyLegacyNotificationsCommandTest(LegacyTableMixin, SiteTestCase):
+    """Opt-in management command to migrate legacy notifications_notification rows."""
 
     def test_noop_when_source_table_missing(self):
         out = StringIO()
         call_command('copy_legacy_notifications', stdout=out)
         self.assertIn('nothing to copy', out.getvalue().lower())
-        self.assertEqual(load_notification_model().objects.count(), 0)
+        self.assertEqual(Notification.objects.count(), 0)
 
     def test_noop_when_source_empty(self):
-        self._create_legacy_table(with_site_column=False)
+        self.create_legacy_table()
         out = StringIO()
         call_command('copy_legacy_notifications', stdout=out)
-        self.assertEqual(load_notification_model().objects.count(), 0)
+        self.assertEqual(Notification.objects.count(), 0)
         self.assertIn('nothing to copy', out.getvalue().lower())
 
     def test_copies_rows_with_default_site_when_no_site_column(self):
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('legacy_1', with_site_column=False)
-        self._insert_legacy_row('legacy_2', with_site_column=False)
-        out = StringIO()
-        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
-        N = load_notification_model()
-        self.assertEqual(N.objects.count(), 2)
-        for n in N.objects.all():
+        self.create_legacy_table()
+        self.insert_legacy_row('legacy_1')
+        self.insert_legacy_row('legacy_2')
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=StringIO())
+        self.assertEqual(Notification.objects.count(), 2)
+        for n in Notification.objects.all():
             self.assertEqual(n.site_id, self.site_a.pk)
 
     def test_preserves_explicit_site_id_and_fills_null(self):
-        self._create_legacy_table(with_site_column=True)
-        self._insert_legacy_row('null_site', site_id=None)
-        self._insert_legacy_row('on_site_a', site_id=self.site_a.pk)
-        self._insert_legacy_row('on_site_b', site_id=self.site_b.pk)
-        out = StringIO()
-        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
-        N = load_notification_model()
-        self.assertEqual(N.objects.count(), 3)
-        self.assertEqual(N.objects.get(verb='null_site').site_id, self.site_a.pk)
-        self.assertEqual(N.objects.get(verb='on_site_a').site_id, self.site_a.pk)
-        self.assertEqual(N.objects.get(verb='on_site_b').site_id, self.site_b.pk)
+        self.create_legacy_table(with_site_column=True)
+        self.insert_legacy_row('null_site', with_site_column=True, site_id=None)
+        self.insert_legacy_row('on_site_a', with_site_column=True, site_id=self.site_a.pk)
+        self.insert_legacy_row('on_site_b', with_site_column=True, site_id=self.site_b.pk)
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=StringIO())
+        self.assertEqual(Notification.objects.count(), 3)
+        self.assertEqual(Notification.objects.get(verb='null_site').site_id, self.site_a.pk)
+        self.assertEqual(Notification.objects.get(verb='on_site_a').site_id, self.site_a.pk)
+        self.assertEqual(Notification.objects.get(verb='on_site_b').site_id, self.site_b.pk)
 
     def test_dry_run_writes_nothing(self):
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('only_one', with_site_column=False)
+        self.create_legacy_table()
+        self.insert_legacy_row('only_one')
         out = StringIO()
         call_command('copy_legacy_notifications', dry_run=True, stdout=out)
-        self.assertEqual(load_notification_model().objects.count(), 0)
+        self.assertEqual(Notification.objects.count(), 0)
         self.assertIn('DRY RUN', out.getvalue())
 
     def test_errors_when_default_site_required_but_missing(self):
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('orphan', with_site_column=False)
+        self.create_legacy_table()
+        self.insert_legacy_row('orphan')
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications')
 
     def test_errors_when_target_already_has_rows(self):
         notify.send(self.from_user, recipient=self.to_user, verb='already_here', site=self.site_a)
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('legacy', with_site_column=False)
+        self.create_legacy_table()
+        self.insert_legacy_row('legacy')
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications', default_site=self.site_a.pk)
 
     def test_force_copies_even_when_target_has_rows(self):
         notify.send(self.from_user, recipient=self.to_user, verb='already_here', site=self.site_a)
-        N = load_notification_model()
-        before = N.objects.count()
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('legacy', with_site_column=False)
-        out = StringIO()
-        call_command('copy_legacy_notifications', default_site=self.site_a.pk, force=True, stdout=out)
-        self.assertEqual(N.objects.count(), before + 1)
+        before = Notification.objects.count()
+        self.create_legacy_table()
+        self.insert_legacy_row('legacy')
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, force=True, stdout=StringIO())
+        self.assertEqual(Notification.objects.count(), before + 1)
 
     def test_errors_when_default_site_does_not_exist(self):
-        self._create_legacy_table(with_site_column=False)
-        self._insert_legacy_row('orphan', with_site_column=False)
+        self.create_legacy_table()
+        self.insert_legacy_row('orphan')
         with self.assertRaises(CommandError):
             call_command('copy_legacy_notifications', default_site=9999)
 
     def test_errors_when_source_missing_required_columns(self):
         """Source schema older than expected: report the missing columns instead of a SQL error."""
-        cols_sql = """
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            level VARCHAR(20) NOT NULL DEFAULT 'info',
-            recipient_id INTEGER NOT NULL,
-            unread BOOLEAN NOT NULL DEFAULT 1,
-            actor_content_type_id INTEGER NOT NULL,
-            actor_object_id VARCHAR(255) NOT NULL,
-            verb VARCHAR(255) NOT NULL,
-            description TEXT,
-            target_content_type_id INTEGER,
-            target_object_id VARCHAR(255),
-            action_object_content_type_id INTEGER,
-            action_object_object_id VARCHAR(255),
-            timestamp DATETIME NOT NULL,
-            public BOOLEAN NOT NULL DEFAULT 1,
-            deleted BOOLEAN NOT NULL DEFAULT 0,
-            emailed BOOLEAN NOT NULL DEFAULT 0
-            -- intentionally missing 'data'
-        """
-        with connection.cursor() as cursor:
-            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
-            cursor.execute(f'CREATE TABLE notifications_notification ({cols_sql})')
-        self.addCleanup(self._drop_legacy_table)
-
-        ct = ContentType.objects.get_for_model(self.from_user)
-        with connection.cursor() as cursor:
-            cursor.execute(
-                'INSERT INTO notifications_notification '
-                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
-                'verb, public, deleted, emailed, timestamp) VALUES '
-                "('info', %s, 1, %s, %s, 'too_old', 1, 0, 0, %s)",
-                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
-            )
-
+        self.create_legacy_table(columns={k: v for k, v in LEGACY_COLUMNS.items() if k != 'data'})
+        self.insert_legacy_row('too_old', columns=[c for c in BASE_COLS if c != 'data'])
         with self.assertRaises(CommandError) as cm:
             call_command('copy_legacy_notifications', default_site=self.site_a.pk)
         self.assertIn('data', str(cm.exception))
 
 
-class CopyLegacyNotificationsDatabaseFlagTest(TestCase):
+class CopyLegacyNotificationsDatabaseFlagTest(LegacyTableMixin, SiteTestCase):
     """The command honors --database for projects routing notifications elsewhere."""
 
     databases = {'default', 'aux'}
 
-    BASE_COLS_SQL = CopyLegacyNotificationsCommandTest.BASE_COLS_SQL
-
     def setUp(self):
-        Site.objects.clear_cache()
-        self.from_user = User.objects.create_user(username='dbflag_from', password='pwd')
-        self.to_user = User.objects.create_user(username='dbflag_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.from_user_aux = User.objects.using('aux').create(username='dbflag_from', password='pwd')
-        self.to_user_aux = User.objects.using('aux').create(username='dbflag_to', password='pwd')
-
-    def _create_legacy_table_on(self, alias):
-        from django.db import connections
-
-        with connections[alias].cursor() as cursor:
-            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
-            cursor.execute(f'CREATE TABLE notifications_notification ({self.BASE_COLS_SQL})')
-        self.addCleanup(self._drop_legacy_table_on, alias)
-
-    def _drop_legacy_table_on(self, alias):
-        from django.db import connections
-
-        with connections[alias].cursor() as cursor:
-            cursor.execute('DROP TABLE IF EXISTS notifications_notification')
-
-    def _insert_legacy_row_on(self, alias, verb):
-        from django.db import connections
-
-        ct = ContentType.objects.db_manager(alias).get_for_model(User)
-        with connections[alias].cursor() as cursor:
-            cursor.execute(
-                'INSERT INTO notifications_notification '
-                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
-                'verb, public, deleted, emailed, timestamp) VALUES '
-                "('info', %s, 1, %s, %s, %s, 1, 0, 0, %s)",
-                [self.to_user_aux.pk, ct.pk, str(self.from_user_aux.pk), verb, timezone.now()],
-            )
+        super().setUp()
+        self.from_user_aux = User.objects.using('aux').create(username='from', password='pwd')
+        self.to_user_aux = User.objects.using('aux').create(username='to', password='pwd')
 
     def test_database_flag_routes_to_aux(self):
-        self._create_legacy_table_on('aux')
-        self._insert_legacy_row_on('aux', 'aux_only')
-        out = StringIO()
-        call_command(
-            'copy_legacy_notifications',
-            default_site=self.site_a.pk,
-            database='aux',
-            stdout=out,
-        )
-        N = load_notification_model()
-        self.assertEqual(N.objects.using('aux').count(), 1)
-        self.assertEqual(N.objects.using('aux').first().verb, 'aux_only')
+        self.create_legacy_table(alias='aux')
+        self.insert_legacy_row('aux_only', alias='aux', recipient=self.to_user_aux, actor=self.from_user_aux)
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, database='aux', stdout=StringIO())
+        self.assertEqual(Notification.objects.using('aux').count(), 1)
+        self.assertEqual(Notification.objects.using('aux').first().verb, 'aux_only')
         # default DB untouched
-        self.assertEqual(N.objects.count(), 0)
+        self.assertEqual(Notification.objects.count(), 0)
 
     def test_default_alias_unchanged_when_flag_omitted(self):
-        self._create_legacy_table_on('default')
-        from django.db import connections
-
-        ct = ContentType.objects.get_for_model(User)
-        with connections['default'].cursor() as cursor:
-            cursor.execute(
-                'INSERT INTO notifications_notification '
-                '(level, recipient_id, unread, actor_content_type_id, actor_object_id, '
-                'verb, public, deleted, emailed, timestamp) VALUES '
-                "('info', %s, 1, %s, %s, 'default_only', 1, 0, 0, %s)",
-                [self.to_user.pk, ct.pk, str(self.from_user.pk), timezone.now()],
-            )
-        out = StringIO()
-        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=out)
-        N = load_notification_model()
-        self.assertEqual(N.objects.count(), 1)
+        self.create_legacy_table()
+        self.insert_legacy_row('default_only')
+        call_command('copy_legacy_notifications', default_site=self.site_a.pk, stdout=StringIO())
+        self.assertEqual(Notification.objects.count(), 1)
         # aux DB not touched
-        self.assertEqual(N.objects.using('aux').count(), 0)
+        self.assertEqual(Notification.objects.using('aux').count(), 0)
 
 
-class RecipientVariantTest(TestCase):
+class RecipientVariantTest(SiteTestCase):
     """notify.send fan-out paths each stamp every produced row with a site."""
 
     def setUp(self):
-        Site.objects.clear_cache()
-        self.from_user = User.objects.create_user(username='rv_from', password='pwd')
-        self.to_user_1 = User.objects.create_user(username='rv_to_1', password='pwd')
-        self.to_user_2 = User.objects.create_user(username='rv_to_2', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        super().setUp()
+        self.to_user_2 = User.objects.create_user(username='to_2', password='pwd')
 
     def test_group_recipient_each_member_stamped(self):
-        from django.contrib.auth.models import Group
-
         group = Group.objects.create(name='testers')
-        group.user_set.add(self.to_user_1, self.to_user_2)
+        group.user_set.add(self.to_user, self.to_user_2)
         notify.send(self.from_user, recipient=group, verb='group_msg', site=self.site_b)
         notifications = Notification.objects.filter(verb='group_msg')
         self.assertEqual(notifications.count(), 2)
         for n in notifications:
             self.assertEqual(n.site_id, self.site_b.pk)
-        self.assertSetEqual(
-            {n.recipient_id for n in notifications},
-            {self.to_user_1.pk, self.to_user_2.pk},
-        )
+        self.assertSetEqual({n.recipient_id for n in notifications}, {self.to_user.pk, self.to_user_2.pk})
 
     def test_list_recipient_each_stamped(self):
-        notify.send(
-            self.from_user,
-            recipient=[self.to_user_1, self.to_user_2],
-            verb='list_msg',
-            site=self.site_b,
-        )
+        notify.send(self.from_user, recipient=[self.to_user, self.to_user_2], verb='list_msg', site=self.site_b)
         notifications = Notification.objects.filter(verb='list_msg')
         self.assertEqual(notifications.count(), 2)
         for n in notifications:
             self.assertEqual(n.site_id, self.site_b.pk)
 
     def test_queryset_recipient_each_stamped(self):
-        qs = User.objects.filter(username__startswith='rv_to_')
+        qs = User.objects.filter(username__startswith='to')
         notify.send(self.from_user, recipient=qs, verb='qs_msg', site=self.site_a)
         notifications = Notification.objects.filter(verb='qs_msg')
         self.assertEqual(notifications.count(), 2)
@@ -662,19 +505,15 @@ class RecipientVariantTest(TestCase):
 
     def test_single_recipient_produces_exactly_one_row(self):
         """Confirms the base signal handler isn't still attached alongside ours."""
-        notify.send(self.from_user, recipient=self.to_user_1, verb='solo')
+        notify.send(self.from_user, recipient=self.to_user, verb='solo')
         self.assertEqual(Notification.objects.filter(verb='solo').count(), 1)
 
 
-class InheritedManagerTest(TestCase):
+class InheritedManagerTest(SiteTestCase):
     """Manager methods defined on AbstractNotification still work on the swapped model."""
 
     def setUp(self):
-        Site.objects.clear_cache()
-        self.from_user = User.objects.create_user(username='im_from', password='pwd')
-        self.to_user = User.objects.create_user(username='im_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        super().setUp()
         for i in range(3):
             notify.send(self.from_user, recipient=self.to_user, verb=f'm{i}', site=self.site_a)
         notify.send(self.from_user, recipient=self.to_user, verb='m_b', site=self.site_b)
@@ -699,10 +538,7 @@ class InheritedManagerTest(TestCase):
         with override_settings(SITE_ID=self.site_a.pk):
             Site.objects.clear_cache()
             self.assertEqual(Notification.on_site.count(), 3)
-            self.assertSetEqual(
-                {n.verb for n in Notification.on_site.all()},
-                {'m0', 'm1', 'm2'},
-            )
+            self.assertSetEqual({n.verb for n in Notification.on_site.all()}, {'m0', 'm1', 'm2'})
         with override_settings(SITE_ID=self.site_b.pk):
             Site.objects.clear_cache()
             self.assertEqual(Notification.on_site.count(), 1)
@@ -715,37 +551,21 @@ class InheritedManagerTest(TestCase):
             self.assertEqual(Notification.on_site.unread().count(), 3)
 
 
-class TemplateTagDirectTest(TestCase):
+class TemplateTagDirectTest(SiteTestCase):
     """Template tag callables work outside of a request context."""
 
-    def setUp(self):
-        Site.objects.clear_cache()
-        cache.clear()
-        self.from_user = User.objects.create_user(username='tt_from', password='pwd')
-        self.to_user = User.objects.create_user(username='tt_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-
     def test_has_notification_filter_with_unread_rows(self):
-        from notifications.templatetags.notifications_tags import has_notification
-
         notify.send(self.from_user, recipient=self.to_user, verb='hi', site=self.site_a)
         self.assertTrue(has_notification(self.to_user))
 
     def test_has_notification_filter_with_no_rows(self):
-        from notifications.templatetags.notifications_tags import has_notification
-
         self.assertFalse(has_notification(self.to_user))
 
     def test_has_notification_filter_with_anonymous_user(self):
-        from notifications.templatetags.notifications_tags import has_notification
-
         self.assertFalse(has_notification(None))
 
     def test_unread_count_cache_key_uses_current_site(self):
-        from notifications.templatetags.notifications_tags import unread_count_cache_key
-
-        key = unread_count_cache_key(self.to_user)
-        self.assertIn(f'site_{self.site_a.pk}', key)
+        self.assertIn(f'site_{self.site_a.pk}', unread_count_cache_key(self.to_user))
 
 
 class AnonymousAccessTest(TestCase):
@@ -772,16 +592,11 @@ class AnonymousAccessTest(TestCase):
         self.assertEqual(response.status_code, 302)
 
 
-class SoftDeleteSitesInteractionTest(TestCase):
+class SoftDeleteSitesInteractionTest(SiteTestCase):
     """SOFT_DELETE config still works alongside site scoping."""
 
     def setUp(self):
-        Site.objects.clear_cache()
-        cache.clear()
-        self.from_user = User.objects.create_user(username='sd_from', password='pwd')
-        self.to_user = User.objects.create_user(username='sd_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-        self.site_b = Site.objects.create(domain='b.example.com', name='Site B')
+        super().setUp()
         notify.send(self.from_user, recipient=self.to_user, verb='soft_a', site=self.site_a)
         notify.send(self.from_user, recipient=self.to_user, verb='soft_b', site=self.site_b)
         self.client.force_login(self.to_user)
