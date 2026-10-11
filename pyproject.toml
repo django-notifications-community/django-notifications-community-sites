@@ -44,6 +44,9 @@ Source = "https://github.com/django-notifications-community/django-notifications
 Issues = "https://github.com/django-notifications-community/django-notifications-community-sites/issues"
 Changelog = "https://github.com/django-notifications-community/django-notifications-community-sites/blob/master/CHANGELOG.md"
 
+[dependency-groups]
+dev = ["pre-commit", "tox"]
+
 [tool.setuptools_scm]
 fallback_version = "0.0.0.dev0"
 

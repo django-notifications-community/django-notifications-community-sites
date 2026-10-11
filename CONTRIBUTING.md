@@ -35,8 +35,8 @@ in check mode) on every commit so issues get caught before they reach CI.
 The full CI matrix runs via `tox`:
 
 ```bash
-tox                     # all envs
-tox -e py312-django52   # a single env
+uv run tox                     # all envs
+uv run tox -e py312-django52   # a single env
 ```
 
 You can also run a quick single-version check without tox:
@@ -54,7 +54,7 @@ Tests live in `notifications_sites/tests/` and use Django's built-in test runner
 - Add or update tests for any behavior change.
 - Update `CHANGELOG.md` under an "Unreleased" section at the top if the change
   is user-visible.
-- Make sure `tox` passes locally before pushing.
+- Make sure `uv run tox` passes locally before pushing.
 - Squash fixup commits before requesting review.
 
 ## Releases
