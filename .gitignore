@@ -12,6 +12,6 @@ htmlcov
 .eggs/
 .venv/
 .ruff_cache/
-test.sqlite3
+*.sqlite3
 settings.json
 uv.lock

@@ -1,12 +1,8 @@
 """Test settings for notifications_sites."""
 
-import os
-
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 SECRET_KEY = 'secret_key'
 
 DEBUG = True
-TESTING = True
 
 DATABASES = {
     'default': {
@@ -36,7 +32,6 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django.contrib.sessions',
     'django.contrib.sites',
-    'notifications_sites.tests.test_models',
     'notifications',
     'notifications_sites',
 ]
@@ -64,7 +59,6 @@ TEMPLATES = [
 ]
 
 LOGIN_URL = '/admin/login/'
-APPEND_SLASH = True
 
 DJANGO_NOTIFICATIONS_CONFIG = {
     'USE_JSONFIELD': True,
@@ -74,7 +68,3 @@ USE_TZ = True
 SITE_ID = 1
 
 NOTIFICATIONS_NOTIFICATION_MODEL = 'notifications_sites.Notification'
-
-ALLOWED_HOSTS = []
-# notifications_sites.tests.test_models has no app config so we set this here.
-DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
