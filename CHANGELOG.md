@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.1.0 - 2026-10-11
 
 - `site_aware_notify_handler` now delegates to the base `notify_handler`
   instead of carrying its own copy. It only fills in
@@ -16,10 +16,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   the FK like any other field. Passing something other than a `Site`
   instance to `site=` now raises Django's `ValueError` instead of the
   companion's `TypeError`.
+- Fix: `notify.send(..., data={...})` to a group, list or queryset of
+  recipients kept the payload only for the first recipient. The old
+  handler popped `data` inside the per recipient loop; the base splits
+  kwargs once, so every recipient now gets it.
 - Add migration 0003 recording `default_manager_name = 'objects'` from
   1.0.2. No schema change, but projects running `makemigrations --check`
   no longer see pending changes for `notifications_sites`.
 - Tested on Python 3.14 and Django 6.1.
+
+Migration 0003 is included; it records a Meta option and changes no
+schema. Requires `django-notifications-community>=1.12.2`.
 
 ## 1.0.2 - 2026-04-30
 
