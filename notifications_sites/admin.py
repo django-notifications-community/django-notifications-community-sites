@@ -19,6 +19,6 @@ Notification = load_notification_model()
 
 # The base's admin.py registered the resolved Notification with the
 # sites-blind admin. Replace it with our subclass.
-if Notification in admin.site._registry:
+if admin.site.is_registered(Notification):
     admin.site.unregister(Notification)
 admin.site.register(Notification, NotificationAdmin)

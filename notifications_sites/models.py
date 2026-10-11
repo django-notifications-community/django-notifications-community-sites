@@ -6,10 +6,8 @@ from django.utils.translation import gettext_lazy as _
 from notifications.base.models import AbstractNotification, NotificationQuerySet
 from notifications.swappable import NOTIFICATION_MODEL_SETTING
 
-_NotificationOnSiteManagerBase = CurrentSiteManager.from_queryset(NotificationQuerySet)
 
-
-class NotificationOnSiteManager(_NotificationOnSiteManagerBase):
+class NotificationOnSiteManager(CurrentSiteManager.from_queryset(NotificationQuerySet)):
     """CurrentSiteManager paired with NotificationQuerySet methods.
 
     Defined as a real subclass so the migration references this name
