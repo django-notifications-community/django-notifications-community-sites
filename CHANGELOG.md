@@ -16,6 +16,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   the FK like any other field. Passing something other than a `Site`
   instance to `site=` now raises Django's `ValueError` instead of the
   companion's `TypeError`.
+- Add migration 0003 recording `default_manager_name = 'objects'` from
+  1.0.2. No schema change, but projects running `makemigrations --check`
+  no longer see pending changes for `notifications_sites`.
 
 ## 1.0.2 - 2026-04-30
 

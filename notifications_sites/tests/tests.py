@@ -811,3 +811,13 @@ class SoftDeleteSitesInteractionTest(TestCase):
         n_a.save(update_fields=['deleted'])
         response = self.client.get(reverse('notifications:all'))
         self.assertEqual(list(response.context['notifications']), [])
+
+
+class MigrationStateTest(TestCase):
+    """Model state and migrations agree, so downstream makemigrations --check stays clean."""
+
+    def test_no_pending_migrations(self):
+        try:
+            call_command('makemigrations', 'notifications_sites', check=True, dry_run=True, stdout=StringIO())
+        except SystemExit:
+            self.fail('notifications_sites has model changes without a migration')
