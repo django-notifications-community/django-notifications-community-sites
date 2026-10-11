@@ -19,7 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Add migration 0003 recording `default_manager_name = 'objects'` from
   1.0.2. No schema change, but projects running `makemigrations --check`
   no longer see pending changes for `notifications_sites`.
-- Tested on Python 3.14.
+- Tested on Python 3.14 and Django 6.1.
 
 ## 1.0.2 - 2026-04-30
 
