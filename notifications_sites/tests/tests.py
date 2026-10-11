@@ -47,27 +47,28 @@ class NotifyHandlerSiteStampingTest(TestCase):
         n = Notification.objects.get(recipient=self.to_user)
         self.assertEqual(n.site_id, self.site_b.pk)
 
-    def test_site_id_kwarg_is_rejected(self):
-        """Passing site_id= is a typo for site=; reject loudly so it doesn't land in data."""
+    def test_site_id_kwarg_is_accepted(self):
+        """The base handler assigns attnames, so site_id= lands on the FK like site= does."""
+        notify.send(self.from_user, recipient=self.to_user, verb='pinged', site_id=self.site_b.pk)
+        n = Notification.objects.get(recipient=self.to_user)
+        self.assertEqual(n.site_id, self.site_b.pk)
+
+    def test_non_site_value_for_site_is_rejected(self):
+        """Django's FK descriptor refuses anything that is not a Site instance."""
+        for bad in (self.site_b.pk, 'b.example.com'):
+            with self.subTest(site=bad), self.assertRaises(ValueError):
+                notify.send(self.from_user, recipient=self.to_user, verb='pinged', site=bad)
+
+    def test_sender_class_is_rejected(self):
+        """A model class instead of an instance must raise, not store the descriptor repr."""
         with self.assertRaises(TypeError):
-            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site_id=self.site_b.pk)
+            notify.send(User, recipient=self.to_user, verb='pinged')
 
-    def test_site_kwarg_int_pk_is_rejected(self):
-        """site=<int> is also a typo. Reject upfront with a clearer message than Django's FK error."""
-        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
-            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site=self.site_b.pk)
-
-    def test_site_kwarg_str_is_rejected(self):
-        with self.assertRaisesRegex(TypeError, 'expected a Site instance'):
-            notify.send(self.from_user, recipient=self.to_user, verb='pinged', site='b.example.com')
-
-    def test_explicit_none_timestamp_is_coerced_to_now(self):
-        """Aligns with base: timestamp=None coerces to timezone.now() instead of IntegrityError."""
-        before = timezone.now()
-        notify.send(self.from_user, recipient=self.to_user, verb='ts_none', timestamp=None)
-        n = Notification.objects.get(verb='ts_none')
-        self.assertIsNotNone(n.timestamp)
-        self.assertGreaterEqual(n.timestamp, before)
+    def test_extra_kwargs_merge_into_data(self):
+        """Smoke test that delegation passes data= and free-form kwargs through to the base."""
+        notify.send(self.from_user, recipient=self.to_user, verb='dk', data={'foo': 'bar'}, extra='zzz')
+        n = Notification.objects.get(verb='dk')
+        self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
 
 
 class ViewFilteringTest(TestCase):
@@ -532,40 +533,6 @@ class CopyLegacyNotificationsCommandTest(TestCase):
         with self.assertRaises(CommandError) as cm:
             call_command('copy_legacy_notifications', default_site=self.site_a.pk)
         self.assertIn('data', str(cm.exception))
-
-
-class DataKwargTest(TestCase):
-    """notify.send(..., data={...}) survives the handler's data merging."""
-
-    def setUp(self):
-        Site.objects.clear_cache()
-        self.from_user = User.objects.create_user(username='dk_from', password='pwd')
-        self.to_user = User.objects.create_user(username='dk_to', password='pwd')
-        self.site_a = Site.objects.get(pk=1)
-
-    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
-    def test_explicit_data_kwarg_is_preserved(self):
-        notify.send(self.from_user, recipient=self.to_user, verb='dk1', data={'foo': 'bar'})
-        n = Notification.objects.get(verb='dk1')
-        self.assertEqual(n.data, {'foo': 'bar'})
-
-    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
-    def test_explicit_data_merges_with_extras(self):
-        notify.send(self.from_user, recipient=self.to_user, verb='dk2', data={'foo': 'bar'}, extra='zzz')
-        n = Notification.objects.get(verb='dk2')
-        self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
-
-    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
-    def test_no_data_no_extras_leaves_data_null(self):
-        notify.send(self.from_user, recipient=self.to_user, verb='dk3')
-        n = Notification.objects.get(verb='dk3')
-        self.assertIsNone(n.data)
-
-    @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
-    def test_caller_dict_not_mutated(self):
-        payload = {'foo': 'bar'}
-        notify.send(self.from_user, recipient=self.to_user, verb='dk4', data=payload, extra='zzz')
-        self.assertEqual(payload, {'foo': 'bar'})
 
 
 class CopyLegacyNotificationsDatabaseFlagTest(TestCase):

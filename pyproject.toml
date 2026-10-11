@@ -19,7 +19,7 @@ maintainers = [
 ]
 dependencies = [
     "django>=5.2,<6.3",
-    "django-notifications-community>=1.12,<2",
+    "django-notifications-community>=1.12.2,<2",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
