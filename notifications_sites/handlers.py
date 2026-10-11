@@ -1,117 +1,16 @@
-"""Site-aware replacement for ``notifications.base.models.notify_handler``.
+"""Site-aware replacement for the base ``notify_handler``.
 
-Stamps ``Site.objects.get_current()`` (or the explicit ``site=`` kwarg)
-on each notification. Mirrors the base handler closely; the only
-differences are the site-specific guards and the ``site`` FK assignment:
-
-- ``site_id=`` raises ``TypeError`` (would otherwise silently land in
-  ``Notification.data``, masking a typo for ``site=``).
-- ``site=`` must be a ``Site`` instance; ``site=<int>`` or ``site=<str>``
-  raises ``TypeError`` instead of bubbling Django's generic FK error.
-- Each notification gets ``site = Site.objects.get_current()`` (or the
-  explicit ``site=`` kwarg).
-
-The companion's ``apps.ready()`` disconnects the base handler and
-connects this one in its place.
+Supplies ``site = Site.objects.get_current()`` when the caller passed
+neither ``site`` nor ``site_id``, then defers to the base handler, which
+assigns both as concrete model fields (base >= 1.12.2) and performs all
+other validation. ``apps.ready()`` swaps this in for the base handler.
 """
 
-from django.contrib.auth.models import Group
-from django.contrib.contenttypes.models import ContentType
 from django.contrib.sites.models import Site
-from django.db.models.query import QuerySet
-from django.utils import timezone
-from notifications.settings import get_config
-from notifications.swappable import load_notification_model
+from notifications.base.models import notify_handler
 
 
 def site_aware_notify_handler(verb, **kwargs):
-    """Create Notification rows on the ``notify`` signal, stamping the current site."""
-    if 'site_id' in kwargs:
-        raise TypeError(
-            "notify.send() got 'site_id'; pass a Site instance via 'site=' instead "
-            '(otherwise the value would silently land in Notification.data).'
-        )
-
-    kwargs.pop('signal', None)
-    recipient = kwargs.pop('recipient')
-    actor = kwargs.pop('sender')
-    optional_objs = [(kwargs.pop(opt, None), opt) for opt in ('target', 'action_object')]
-
-    site = kwargs.pop('site', None)
-    if site is not None and not isinstance(site, Site):
-        raise TypeError(
-            f"notify.send() got 'site' of type {type(site).__name__}; "
-            'expected a Site instance. Use Site.objects.get(pk=...) to fetch '
-            "the row, or omit 'site' to use Site.objects.get_current()."
-        )
-    if site is None:
-        site = Site.objects.get_current()
-
-    public = bool(kwargs.pop('public', True))
-    description = kwargs.pop('description', None)
-    # ``kwargs.pop('timestamp', timezone.now())`` returns ``None`` when the
-    # caller passed ``None`` explicitly; the default only applies when the key
-    # is absent. Coerce to now() so a NOT NULL column doesn't trip.
-    timestamp = kwargs.pop('timestamp', None)
-    if timestamp is None:
-        timestamp = timezone.now()
-    Notification = load_notification_model()
-    level = kwargs.pop('level', Notification.LEVELS.info)
-    actor_for_concrete_model = kwargs.pop('actor_for_concrete_model', True)
-
-    actor_content_type = ContentType.objects.get_for_model(actor, for_concrete_model=actor_for_concrete_model)
-    optional_content_types = {
-        opt: ContentType.objects.get_for_model(obj, for_concrete_model=kwargs.get(f'{opt}_for_concrete_model', True))
-        for obj, opt in optional_objs
-        if obj is not None
-    }
-
-    if isinstance(recipient, Group):
-        recipients = recipient.user_set.all()
-    elif isinstance(recipient, QuerySet | list):
-        recipients = recipient
-    else:
-        recipients = [recipient]
-
-    new_notifications = []
-
-    for recipient in recipients:
-        newnotify = Notification(
-            recipient=recipient,
-            actor_content_type=actor_content_type,
-            actor_object_id=actor.pk,
-            verb=str(verb),
-            public=public,
-            description=description,
-            timestamp=timestamp,
-            level=level,
-            site=site,
-        )
-
-        for obj, opt in optional_objs:
-            if obj is not None:
-                setattr(newnotify, f'{opt}_object_id', obj.pk)
-                setattr(newnotify, f'{opt}_content_type', optional_content_types[opt])
-
-        if kwargs and get_config()['USE_JSONFIELD']:
-            # Seed data_kwargs with the caller's explicit data= dict so it
-            # survives the loop. Without this seed, the trailing
-            # ``newnotify.data = data_kwargs`` clobbers the caller's payload
-            # that the loop set via setattr (the base handler has the same
-            # bug).
-            data_kwargs = dict(kwargs.pop('data', None) or {})
-            for key in list(kwargs.keys()):
-                if key.endswith('_for_concrete_model'):
-                    continue
-                if hasattr(newnotify, key):
-                    setattr(newnotify, key, kwargs[key])
-                else:
-                    data_kwargs[key] = kwargs[key]
-            if data_kwargs:
-                newnotify.data = data_kwargs
-
-        new_notifications.append(newnotify)
-
-    Notification.objects.bulk_create(new_notifications)
-
-    return new_notifications
+    if kwargs.get('site') is None and 'site_id' not in kwargs:
+        kwargs['site'] = Site.objects.get_current()
+    return notify_handler(verb, **kwargs)

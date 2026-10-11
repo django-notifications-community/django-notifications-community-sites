@@ -89,6 +89,8 @@ tenant N. Pass `site=` explicitly from background jobs:
 notify.send(actor, recipient=user, verb='ping', site=tenant_site)
 ```
 
+`site_id=<pk>` works too when only the primary key is at hand.
+
 ### Request host wins over `SITE_ID`
 
 When a request is in scope, the companion resolves the current site by `Host`

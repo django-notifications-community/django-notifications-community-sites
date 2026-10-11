@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- `site_aware_notify_handler` now delegates to the base `notify_handler`
+  instead of carrying its own copy. It only fills in
+  `Site.objects.get_current()` when neither `site=` nor `site_id=` was
+  passed. Requires `django-notifications-community>=1.12.2`.
+- `notify.send()` rejects model classes and unsaved instances for
+  `sender`, `target` and `action_object`, as the base does.
+- `notify.send(site_id=<pk>)` is accepted again; the base assigns it to
+  the FK like any other field. Passing something other than a `Site`
+  instance to `site=` now raises Django's `ValueError` instead of the
+  companion's `TypeError`.
+
 ## 1.0.2 - 2026-04-30
 
 - **Behavior change:** the registered queryset filter now resolves the current
