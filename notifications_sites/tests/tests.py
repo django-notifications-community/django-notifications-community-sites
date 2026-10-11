@@ -551,9 +551,7 @@ class DataKwargTest(TestCase):
 
     @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
     def test_explicit_data_merges_with_extras(self):
-        notify.send(
-            self.from_user, recipient=self.to_user, verb='dk2', data={'foo': 'bar'}, extra='zzz'
-        )
+        notify.send(self.from_user, recipient=self.to_user, verb='dk2', data={'foo': 'bar'}, extra='zzz')
         n = Notification.objects.get(verb='dk2')
         self.assertEqual(n.data, {'foo': 'bar', 'extra': 'zzz'})
 
@@ -566,9 +564,7 @@ class DataKwargTest(TestCase):
     @override_settings(DJANGO_NOTIFICATIONS_CONFIG={'USE_JSONFIELD': True})
     def test_caller_dict_not_mutated(self):
         payload = {'foo': 'bar'}
-        notify.send(
-            self.from_user, recipient=self.to_user, verb='dk4', data=payload, extra='zzz'
-        )
+        notify.send(self.from_user, recipient=self.to_user, verb='dk4', data=payload, extra='zzz')
         self.assertEqual(payload, {'foo': 'bar'})
 
 
@@ -584,12 +580,8 @@ class CopyLegacyNotificationsDatabaseFlagTest(TestCase):
         self.from_user = User.objects.create_user(username='dbflag_from', password='pwd')
         self.to_user = User.objects.create_user(username='dbflag_to', password='pwd')
         self.site_a = Site.objects.get(pk=1)
-        self.from_user_aux = User.objects.using('aux').create(
-            username='dbflag_from', password='pwd'
-        )
-        self.to_user_aux = User.objects.using('aux').create(
-            username='dbflag_to', password='pwd'
-        )
+        self.from_user_aux = User.objects.using('aux').create(username='dbflag_from', password='pwd')
+        self.to_user_aux = User.objects.using('aux').create(username='dbflag_to', password='pwd')
 
     def _create_legacy_table_on(self, alias):
         from django.db import connections
